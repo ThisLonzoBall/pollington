@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ThisLonzoBall/zippy/internal/provider"
+	"github.com/ThisLonzoBall/pollington/internal/provider"
 )
 
-const systemPrompt = `You are Zippy, a coding assistant that lives in the terminal.
+const systemPrompt = `You are Pollington, a coding assistant that lives in the terminal.
 Use the provided tools to inspect and edit the user's project.
 Prefer reading a file before editing it. Keep answers short.`
 

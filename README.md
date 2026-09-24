@@ -1,4 +1,4 @@
-# zippy
+# pollington
 
 A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
 
@@ -63,7 +63,7 @@ a five-second fix.
 
 ```
 main.go                     wiring
-internal/config/            settings, presets, ~/.config/zippy/config.json
+internal/config/            settings, presets, ~/.config/pollington/config.json
 internal/provider/          OpenAI-compatible HTTP client
 internal/agent/             the tool-calling loop
 internal/agent/tools.go     tool implementations

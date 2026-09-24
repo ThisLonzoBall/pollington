@@ -10,12 +10,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/ThisLonzoBall/zippy/internal/agent"
+	"github.com/ThisLonzoBall/pollington/internal/agent"
 )
 
 var (
 	userStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	zippyStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	botStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	statusStyle = lipgloss.NewStyle().Faint(true)
 )
@@ -35,14 +35,14 @@ type Model struct {
 
 func New(a *agent.Agent) Model {
 	ti := textinput.New()
-	ti.Placeholder = "ask zippy something"
+	ti.Placeholder = "ask pollington something"
 	ti.Focus()
 	ti.Prompt = "> "
 
 	return Model{
 		agent: a,
 		input: ti,
-		lines: []string{statusStyle.Render("zippy - ctrl+c to quit")},
+		lines: []string{statusStyle.Render("pollington - ctrl+c to quit")},
 	}
 }
 
@@ -73,7 +73,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.lines = append(m.lines, errorStyle.Render("error ")+msg.err.Error())
 		} else {
-			m.lines = append(m.lines, zippyStyle.Render("zippy ")+msg.text)
+			m.lines = append(m.lines, botStyle.Render("pollington ")+msg.text)
 		}
 		return m, nil
 	}

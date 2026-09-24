@@ -1,4 +1,4 @@
-module github.com/ThisLonzoBall/zippy
+module github.com/ThisLonzoBall/pollington
 
 go 1.22
 

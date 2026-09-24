@@ -6,20 +6,20 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/ThisLonzoBall/zippy/internal/agent"
-	"github.com/ThisLonzoBall/zippy/internal/config"
-	"github.com/ThisLonzoBall/zippy/internal/provider"
-	"github.com/ThisLonzoBall/zippy/internal/tui"
+	"github.com/ThisLonzoBall/pollington/internal/agent"
+	"github.com/ThisLonzoBall/pollington/internal/config"
+	"github.com/ThisLonzoBall/pollington/internal/provider"
+	"github.com/ThisLonzoBall/pollington/internal/tui"
 )
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "zippy:", err)
+		fmt.Fprintln(os.Stderr, "pollington:", err)
 		os.Exit(1)
 	}
 	if cfg.APIKey == "" {
-		fmt.Fprintln(os.Stderr, "zippy: no API key. Set MINIMAX_API_KEY or write one to your config file.")
+		fmt.Fprintln(os.Stderr, "pollington: no API key. Set MINIMAX_API_KEY or write one to your config file.")
 		os.Exit(1)
 	}
 
@@ -27,7 +27,7 @@ func main() {
 	a := agent.New(client, agent.DefaultTools())
 
 	if _, err := tea.NewProgram(tui.New(a), tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "zippy:", err)
+		fmt.Fprintln(os.Stderr, "pollington:", err)
 		os.Exit(1)
 	}
 }

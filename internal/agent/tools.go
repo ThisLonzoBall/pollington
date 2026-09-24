@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ThisLonzoBall/zippy/internal/provider"
+	"github.com/ThisLonzoBall/pollington/internal/provider"
 )
 
 // DefaultTools is the starting set. write_file and run_shell come next, and

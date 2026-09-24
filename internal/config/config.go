@@ -1,4 +1,4 @@
-// Package config loads and persists Zippy's on-disk settings.
+// Package config loads and persists Pollington's on-disk settings.
 //
 // Everything provider-specific lives here. The rest of the codebase only ever
 // sees a BaseURL, an APIKey and a Model, which is what makes swapping MiniMax
@@ -26,13 +26,13 @@ type Config struct {
 	Model   string `json:"model"`
 }
 
-// Path returns ~/.config/zippy/config.json.
+// Path returns ~/.config/pollington/config.json.
 func Path() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "zippy", "config.json"), nil
+	return filepath.Join(dir, "pollington", "config.json"), nil
 }
 
 // Load reads the config file, falling back to the MiniMax preset. The
