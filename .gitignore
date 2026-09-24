@@ -1,0 +1,5 @@
+zippy
+/dist/
+*.exe
+config.json
+.env
