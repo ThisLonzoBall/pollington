@@ -19,14 +19,15 @@ A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
 
 ## Run
 
-Go is not installed on the machine this was written on, so **this has not been
-compiled yet**. First run will need:
+Needs Go 1.23 or newer — a dependency requires it, so the version in Ubuntu 24.04's
+apt (1.22) will not build this. Built and verified against Go 1.27.1.
 
 ```sh
-go mod tidy          # pins the charmbracelet versions
 export MINIMAX_API_KEY=sk-...
 go run .
 ```
+
+Without a key it exits 1 with a message rather than failing at the first request.
 
 ## Design
 
