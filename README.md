@@ -2,20 +2,23 @@
 
 A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
 
-> Skeleton stage. The loop, the client and the config are real; streaming, the
-> settings panel and the write/shell tools are not there yet.
+> It can read your code, change it, run your build, and check its own work.
+> Streaming and the settings panel are not there yet.
 
 ## Status
 
 | Piece | State |
 |---|---|
 | OpenAI-compatible client | works, non-streaming |
-| Tool-calling loop | works |
+| Tool-calling loop | works, 25-step cap |
 | `read_file`, `list_dir` | works |
-| Bubble Tea UI | minimal — input, transcript, token counter |
-| Streaming | TODO |
-| `write_file`, `run_shell` | TODO, both need a confirm prompt |
+| `write_file`, `run_shell` | works, each gated behind a `y/n` prompt |
+| Tests | 28, no API key or network needed |
+| Bubble Tea UI | input, transcript, confirm prompt, token counter |
+| Streaming | TODO — biggest remaining win |
 | Settings panel (ctrl+s) | TODO |
+
+Never yet pointed at a real provider — every test runs against a fake server.
 
 ## Run
 
@@ -40,33 +43,73 @@ Presets live in `internal/config`:
 
 | Preset | Base URL | Model |
 |---|---|---|
-| `minimax` | `https://api.minimax.io/v1` | `MiniMax-M2` |
-| `ollama` | `http://localhost:11434/v1` | `qwen3-coder:30b` |
+| `minimax` | `https://api.minimax.io/v1` | `MiniMax-M2.7` |
+| `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | `groq` | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` |
+| `ollama` | `http://localhost:11434/v1` | `qwen3-coder:30b` |
 
-### Three things the code is deliberately careful about
+Override either for one run without editing anything:
 
-**Reasoning content is kept in history.** MiniMax-M2 thinks between tool calls
-and needs that trace replayed on later requests. Strip it and the model loses
-the thread mid-task — it will re-read the same file every turn. `provider.Message`
-carries `reasoning_content` and `agent.Send` appends the assistant message whole.
+```sh
+POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b pollington
+```
 
-**Tool output is truncated at 8k.** Whatever a tool returns enters history
-permanently and is resent on every subsequent turn, so an unbounded build log
-is a recurring charge rather than a one-off.
+Model IDs move fast — confirm the current one in your provider's console.
+
+### Five things the code is deliberately careful about
+
+**Reasoning content is kept in history.** MiniMax's models think between tool
+calls and need that trace replayed on later requests. Strip it and the model
+loses the thread mid-task — it will re-read the same file every turn.
+`provider.Message` carries `reasoning_content` and `agent.Send` appends the
+assistant message whole. `TestReasoningSurvivesInHistory` guards it.
+
+**The tool list is sorted and built once.** Go randomizes map iteration order.
+Deriving the tool block from a map per request would reorder the front of the
+prompt every time and miss the provider's prompt cache on every turn — costing
+~8x on input tokens and the prefill latency a cache hit saves, while breaking
+nothing visibly. `TestToolOrderIsStable` guards it.
+
+**Tool output is capped at 8k, head and tail.** Whatever a tool returns enters
+history permanently and is resent every turn, so an unbounded build log is a
+recurring charge. Truncation keeps both ends, because compilers put the summary
+on the last line, and it cuts on line boundaries so a multi-byte character is
+never split — `encoding/json` would silently corrupt it rather than erroring.
+
+**`write_file` and `run_shell` need permission.** Both set `NeedsConfirm`, and a
+nil confirmation handler denies rather than allows, so non-interactive callers
+fail closed. `safePath` keeps file tools inside the working directory; a shell
+command cannot be sandboxed that way, which is exactly why it asks first.
+
+**`run_shell` kills the whole process group.** `exec.CommandContext` only kills
+the shell, and a surviving grandchild holds the output pipe open — so
+`CombinedOutput` blocks past the deadline and the timeout does nothing. Found by
+`TestRunShellTimesOut`, which took 30 seconds before the fix and 0.16 after.
 
 **Errors name the URL they used.** `api.minimax.io` (global) and
 `api.minimaxi.com` (China) are separate platforms with separate keys, and the
 wrong pairing returns a generic auth failure. Printing the URL turns that into
 a five-second fix.
 
+## Tests
+
+```sh
+go test ./...          # 28 tests, no API key, no network, no cost
+go test -race ./...    # the confirm prompt crosses goroutines
+```
+
+Every test runs against an `httptest` server that replays canned model
+responses, so the loop, the reasoning-retention rule, the cache ordering and the
+permission gate are all verified offline.
+
 ## Layout
 
 ```
-main.go                     wiring
-internal/config/            settings, presets, ~/.config/pollington/config.json
-internal/provider/          OpenAI-compatible HTTP client
-internal/agent/             the tool-calling loop
-internal/agent/tools.go     tool implementations
-internal/tui/               Bubble Tea front end
+main.go                       wiring
+internal/config/              settings, presets, ~/.config/pollington/config.json
+internal/provider/            OpenAI-compatible HTTP client
+internal/agent/agent.go       the tool-calling loop, truncation, the confirm gate
+internal/agent/tools.go       read_file, list_dir, write_file, run_shell
+internal/agent/shell_unix.go  process-group kill (and shell_other.go elsewhere)
+internal/tui/                 Bubble Tea front end
 ```

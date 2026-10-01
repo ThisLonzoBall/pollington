@@ -14,10 +14,17 @@ import (
 
 // Presets are the providers offered in the settings panel. They all speak the
 // OpenAI-compatible /chat/completions wire format.
+//
+// Model IDs move faster than this file does - MiniMax has shipped M2.5, M2.7
+// and M3 since M2. Confirm the current ID in your provider's console; a stale
+// one comes back as an unhelpful API error rather than a clear "no such model".
+// Note that api.minimax.io (global) and api.minimaxi.com (mainland China) are
+// separate platforms with separate keys.
 var Presets = map[string]Config{
-	"minimax": {BaseURL: "https://api.minimax.io/v1", Model: "MiniMax-M2"},
-	"ollama":  {BaseURL: "http://localhost:11434/v1", Model: "qwen3-coder:30b", APIKey: "ollama"},
-	"groq":    {BaseURL: "https://api.groq.com/openai/v1", Model: "openai/gpt-oss-120b"},
+	"minimax":  {BaseURL: "https://api.minimax.io/v1", Model: "MiniMax-M2.7"},
+	"deepseek": {BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
+	"groq":     {BaseURL: "https://api.groq.com/openai/v1", Model: "openai/gpt-oss-120b"},
+	"ollama":   {BaseURL: "http://localhost:11434/v1", Model: "qwen3-coder:30b", APIKey: "ollama"},
 }
 
 type Config struct {
@@ -35,9 +42,12 @@ func Path() (string, error) {
 	return filepath.Join(dir, "pollington", "config.json"), nil
 }
 
-// Load reads the config file, falling back to the MiniMax preset. The
-// MINIMAX_API_KEY environment variable always wins, so a key never has to
-// touch the disk.
+// Load resolves settings in increasing order of precedence: the MiniMax
+// preset, then the config file, then the environment. Environment variables win
+// so a key never has to touch the disk, and so switching provider for one run
+// needs no file edit:
+//
+//	POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b pollington
 func Load() (Config, error) {
 	c := Presets["minimax"]
 
@@ -54,8 +64,20 @@ func Load() (Config, error) {
 		return c, err
 	}
 
-	if k := os.Getenv("MINIMAX_API_KEY"); k != "" {
-		c.APIKey = k
+	// POLLINGTON_API_KEY is the provider-neutral name; MINIMAX_API_KEY stays
+	// supported because it is what the README has always told people to set.
+	for _, env := range []struct {
+		name string
+		dst  *string
+	}{
+		{"MINIMAX_API_KEY", &c.APIKey},
+		{"POLLINGTON_API_KEY", &c.APIKey},
+		{"POLLINGTON_BASE_URL", &c.BaseURL},
+		{"POLLINGTON_MODEL", &c.Model},
+	} {
+		if v := os.Getenv(env.name); v != "" {
+			*env.dst = v
+		}
 	}
 	return c, nil
 }
