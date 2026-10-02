@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.23 is the floor declared in go.mod - if it breaks there, the module
+        # directive is lying. stable catches anything the newest toolchain tightens.
+        go: ["1.23", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # -race matters here: the confirmation prompt hands a request from the
+      # agent's goroutine to the Bubble Tea update loop and blocks on the reply.
+      - name: test
+        run: go test -race -count=1 ./...
+
+      - name: tidy is committed
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
