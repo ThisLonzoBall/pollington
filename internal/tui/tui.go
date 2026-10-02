@@ -4,14 +4,35 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ThisLonzoBall/pollington/internal/agent"
 )
+
+// verbs are what the spinner says while the model works. Gerunds, because "-ing"
+// reads as ongoing work where a noun reads as a stuck process, and short enough
+// not to wrap in a narrow terminal.
+var verbs = []string{
+	"Thinking", "Pondering", "Noodling", "Percolating", "Marinating",
+	"Ruminating", "Scheming", "Whittling", "Conjuring", "Untangling",
+}
+
+// verbInterval is slow on purpose. Faster than about 3s reads as flicker rather
+// than deliberate personality.
+const verbInterval = 4 * time.Second
+
+type verbMsg struct{}
+
+func nextVerb() tea.Cmd {
+	return tea.Tick(verbInterval, func(time.Time) tea.Msg { return verbMsg{} })
+}
 
 var (
 	userStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
@@ -38,6 +59,9 @@ type confirmReq struct {
 type Model struct {
 	agent     *agent.Agent
 	input     textinput.Model
+	spin      spinner.Model
+	verb      string
+	started   time.Time
 	lines     []string
 	working   bool
 	width     int
@@ -50,6 +74,9 @@ func New(a *agent.Agent) Model {
 	ti.Placeholder = "ask pollington something"
 	ti.Focus()
 	ti.Prompt = "> "
+
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+	sp.Style = statusStyle
 
 	ch := make(chan confirmReq)
 
@@ -65,9 +92,22 @@ func New(a *agent.Agent) Model {
 	return Model{
 		agent:     a,
 		input:     ti,
+		spin:      sp,
+		verb:      verbs[0],
 		confirmCh: ch,
 		lines:     []string{statusStyle.Render("pollington - ctrl+c to quit")},
 	}
+}
+
+// rollVerb picks a new verb, never the one already showing - repeating looks
+// like the rotation has stalled.
+func (m Model) rollVerb() string {
+	for i := 0; i < 8; i++ {
+		if v := verbs[rand.Intn(len(verbs))]; v != m.verb {
+			return v
+		}
+	}
+	return m.verb
 }
 
 // waitForConfirm parks on the channel until the agent asks for permission. It
@@ -78,7 +118,7 @@ func waitForConfirm(ch chan confirmReq) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitForConfirm(m.confirmCh))
+	return tea.Batch(textinput.Blink, m.spin.Tick, waitForConfirm(m.confirmCh))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -89,6 +129,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case confirmReq:
 		m.pending = &msg
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
+	case verbMsg:
+		if !m.working {
+			return m, nil // stop rotating once the turn is over
+		}
+		m.verb = m.rollVerb()
+		return m, nextVerb()
 
 	case tea.KeyMsg:
 		// A pending confirmation swallows all input until it is answered,
@@ -108,7 +160,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			m.lines = append(m.lines, userStyle.Render("you ")+text)
 			m.working = true
-			return m, m.ask(text)
+			m.started = time.Now()
+			m.verb = m.rollVerb()
+			return m, tea.Batch(m.ask(text), nextVerb())
 		}
 
 	case replyMsg:
@@ -175,7 +229,14 @@ func (m Model) View() string {
 		b.WriteString(statusStyle.Render("  y to allow, n to decline") + "\n")
 		return b.String()
 	case m.working:
-		b.WriteString(statusStyle.Render("thinking...") + "\n")
+		// The elapsed counter is the part that earns its place: at 40 seconds a
+		// static string is indistinguishable from a crash, and people kill the
+		// process - wasting every token already spent on the turn.
+		b.WriteString(fmt.Sprintf("%s %s… %s\n",
+			m.spin.View(),
+			m.verb,
+			statusStyle.Render(time.Since(m.started).Truncate(time.Second).String()),
+		))
 	}
 
 	b.WriteString("\n" + m.input.View() + "\n")

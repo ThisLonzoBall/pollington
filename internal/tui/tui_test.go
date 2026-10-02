@@ -155,3 +155,44 @@ func TestDefaultToolsAreGated(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkingViewShowsSpinnerVerbAndElapsed(t *testing.T) {
+	m, _ := newTestModel()
+	m.working = true
+	m.verb = "Percolating"
+	m.started = time.Now().Add(-42 * time.Second)
+
+	view := m.View()
+	if !strings.Contains(view, "Percolating") {
+		t.Errorf("no verb in view:\n%s", view)
+	}
+	// Without this, a long wait is indistinguishable from a hung process.
+	if !strings.Contains(view, "42s") {
+		t.Errorf("no elapsed time in view:\n%s", view)
+	}
+}
+
+func TestVerbRotationStopsWhenIdle(t *testing.T) {
+	m, _ := newTestModel()
+
+	m.working = false
+	if _, cmd := m.Update(verbMsg{}); cmd != nil {
+		t.Error("should not keep scheduling verb ticks once the turn is over")
+	}
+
+	m.working = true
+	if _, cmd := m.Update(verbMsg{}); cmd == nil {
+		t.Error("should keep rotating while working")
+	}
+}
+
+func TestRollVerbAvoidsRepeating(t *testing.T) {
+	m, _ := newTestModel()
+	m.verb = verbs[0]
+
+	for i := 0; i < 200; i++ {
+		if got := m.rollVerb(); got == m.verb {
+			t.Fatalf("rollVerb returned the current verb %q", got)
+		}
+	}
+}
