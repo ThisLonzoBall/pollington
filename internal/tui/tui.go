@@ -67,6 +67,13 @@ type Model struct {
 	width     int
 	confirmCh chan confirmReq
 	pending   *confirmReq
+
+	eventCh chan agent.Event
+
+	// Plain strings, not strings.Builder: Bubble Tea passes the Model by value
+	// on every update, and writing to a copied Builder panics.
+	answer string // the reply so far, rendered as it streams in
+	think  string // the model's reasoning so far, dimmed
 }
 
 func New(a *agent.Agent) Model {
@@ -79,15 +86,18 @@ func New(a *agent.Agent) Model {
 	sp.Style = statusStyle
 
 	ch := make(chan confirmReq)
+	// Buffered so a burst of tokens does not stall the agent between renders.
+	ev := make(chan agent.Event, 256)
 
-	// Installed here rather than in main so the channel has exactly one owner.
-	// This runs on the agent's goroutine and must not touch Model state - the
-	// only safe channel of communication is ch.
+	// Installed here rather than in main so the channels have exactly one
+	// owner. Both run on the agent's goroutine and must not touch Model state -
+	// the channel is the only safe way across.
 	a.Confirm = func(action, detail string) bool {
 		reply := make(chan bool, 1)
 		ch <- confirmReq{action: action, detail: detail, reply: reply}
 		return <-reply
 	}
+	a.OnEvent = func(e agent.Event) { ev <- e }
 
 	return Model{
 		agent:     a,
@@ -95,6 +105,7 @@ func New(a *agent.Agent) Model {
 		spin:      sp,
 		verb:      verbs[0],
 		confirmCh: ch,
+		eventCh:   ev,
 		lines:     []string{statusStyle.Render("pollington - ctrl+c to quit")},
 	}
 }
@@ -117,8 +128,17 @@ func waitForConfirm(ch chan confirmReq) tea.Cmd {
 	return func() tea.Msg { return <-ch }
 }
 
+func waitForEvent(ch chan agent.Event) tea.Cmd {
+	return func() tea.Msg { return <-ch }
+}
+
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.spin.Tick, waitForConfirm(m.confirmCh))
+	return tea.Batch(
+		textinput.Blink,
+		m.spin.Tick,
+		waitForConfirm(m.confirmCh),
+		waitForEvent(m.eventCh),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -129,6 +149,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case confirmReq:
 		m.pending = &msg
 		return m, nil
+
+	case agent.Event:
+		switch msg.Kind {
+		case agent.EventReasoning:
+			m.think += msg.Text
+		case agent.EventContent:
+			m.answer += msg.Text
+		case agent.EventToolStart:
+			// A real action beats a whimsical verb: "Reading main.go" tells the
+			// user more than "Percolating" ever will.
+			m.lines = append(m.lines, statusStyle.Render("  ⚙ "+msg.Text))
+			if name, _, ok := strings.Cut(msg.Text, " "); ok {
+				m.verb = "Running " + name
+			}
+			// A tool call means the previous answer fragment is finished.
+			m.answer, m.think = "", ""
+		case agent.EventToolDone:
+			m.verb = m.rollVerb()
+		}
+		return m, waitForEvent(m.eventCh)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -162,11 +202,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.working = true
 			m.started = time.Now()
 			m.verb = m.rollVerb()
+			m.answer, m.think = "", ""
 			return m, tea.Batch(m.ask(text), nextVerb())
 		}
 
 	case replyMsg:
 		m.working = false
+		// The streamed text has already been on screen; commit the authoritative
+		// copy to the transcript and clear the live buffers so it is not shown
+		// twice.
+		m.answer, m.think = "", ""
 		if msg.err != nil {
 			m.lines = append(m.lines, errorStyle.Render("error ")+msg.err.Error())
 		} else {
@@ -206,9 +251,7 @@ func (m Model) answerConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // ask runs the agent off the UI goroutine. Bubble Tea delivers the result back
-// as a replyMsg.
-//
-// TODO: stream tokens and tool activity instead of waiting for the whole turn.
+// as a replyMsg, while progress arrives separately over eventCh.
 func (m Model) ask(text string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := m.agent.Send(context.Background(), text)
@@ -229,6 +272,15 @@ func (m Model) View() string {
 		b.WriteString(statusStyle.Render("  y to allow, n to decline") + "\n")
 		return b.String()
 	case m.working:
+		// Reasoning first, dimmed, and only the tail of it. A thinking model can
+		// emit thousands of tokens here; the point is to prove it is working, not
+		// to make the user read it.
+		if m.think != "" {
+			b.WriteString(statusStyle.Render(tailLines(m.think, thinkTailLines)) + "\n")
+		}
+		if m.answer != "" {
+			b.WriteString(botStyle.Render("pollington ") + m.answer + "\n")
+		}
 		// The elapsed counter is the part that earns its place: at 40 seconds a
 		// static string is indistinguishable from a crash, and people kill the
 		// process - wasting every token already spent on the turn.
@@ -244,4 +296,17 @@ func (m Model) View() string {
 	u := m.agent.Usage
 	b.WriteString(statusStyle.Render(fmt.Sprintf("in %d  out %d", u.PromptTokens, u.CompletionTokens)))
 	return b.String()
+}
+
+// thinkTailLines is how much of the reasoning stream stays on screen.
+const thinkTailLines = 3
+
+// tailLines keeps the last n lines of s, so a long reasoning trace scrolls in
+// place instead of pushing the input box off the bottom of the terminal.
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

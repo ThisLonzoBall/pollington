@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ThisLonzoBall/pollington/internal/provider"
@@ -37,11 +39,38 @@ func newFakeAPI(t *testing.T, replies ...string) *fakeAPI {
 		if i >= len(f.replies) {
 			i = len(f.replies) - 1 // repeat the last reply forever
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, f.replies[i])
 	}))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// sse frames a set of chunk payloads as an event stream, terminated the way the
+// OpenAI-compatible APIs do.
+func sse(chunks ...string) string {
+	var b strings.Builder
+	for _, c := range chunks {
+		b.WriteString("data: " + c + "\n\n")
+	}
+	b.WriteString("data: [DONE]\n\n")
+	return b.String()
+}
+
+func chunk(delta map[string]any) string {
+	b, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"index": 0, "delta": delta}},
+	})
+	return string(b)
+}
+
+// usageChunk is the final frame, which carries usage and no choices.
+func usageChunk() string {
+	b, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{},
+		"usage":   map[string]int{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+	})
+	return string(b)
 }
 
 func (f *fakeAPI) agent(tools []Tool) *Agent {
@@ -50,29 +79,42 @@ func (f *fakeAPI) agent(tools []Tool) *Agent {
 
 // toolCallReply is an assistant turn that asks for a tool, including the
 // reasoning_content that MiniMax-style models emit between calls.
+//
+// The arguments are deliberately split across two frames. Real providers
+// fragment them, and reassembly is the part most likely to break.
 func toolCallReply(id, name, args, reasoning string) string {
-	msg := map[string]any{
-		"role":              "assistant",
-		"reasoning_content": reasoning,
-		"tool_calls": []map[string]any{{
+	frames := []string{}
+	if reasoning != "" {
+		frames = append(frames, chunk(map[string]any{"reasoning_content": reasoning}))
+	}
+
+	cut := len(args) / 2
+	frames = append(frames,
+		chunk(map[string]any{"tool_calls": []map[string]any{{
+			"index":    0,
 			"id":       id,
 			"type":     "function",
-			"function": map[string]any{"name": name, "arguments": args},
-		}},
-	}
-	return wrap(msg, "tool_calls")
+			"function": map[string]any{"name": name, "arguments": args[:cut]},
+		}}}),
+		// Note the follow-up frame carries neither id nor name - only the index
+		// ties it to the call it belongs to.
+		chunk(map[string]any{"tool_calls": []map[string]any{{
+			"index":    0,
+			"function": map[string]any{"arguments": args[cut:]},
+		}}}),
+		usageChunk(),
+	)
+	return sse(frames...)
 }
 
+// answerReply streams plain text a few characters at a time.
 func answerReply(text string) string {
-	return wrap(map[string]any{"role": "assistant", "content": text}, "stop")
-}
-
-func wrap(msg map[string]any, finish string) string {
-	b, _ := json.Marshal(map[string]any{
-		"choices": []map[string]any{{"message": msg, "finish_reason": finish}},
-		"usage":   map[string]int{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-	})
-	return string(b)
+	var frames []string
+	for i := 0; i < len(text); i += 7 {
+		end := min(i+7, len(text))
+		frames = append(frames, chunk(map[string]any{"content": text[i:end]}))
+	}
+	return sse(append(frames, usageChunk())...)
 }
 
 // echoTool is a harmless stand-in that reports what it was given.
@@ -455,4 +497,128 @@ func TestTruncate(t *testing.T) {
 			t.Error("a legitimate U+FFFD was stripped")
 		}
 	})
+}
+
+// TestEventsArriveDuringTheTurn proves streaming is real rather than a buffered
+// response delivered in pieces at the end.
+//
+// The server writes one frame, flushes, then *blocks* until the test confirms
+// the agent already surfaced it. If events were only emitted after the response
+// completed, this deadlocks and the test times out — which is exactly the
+// failure mode worth catching, since a buffering proxy or a missing flush looks
+// identical to working code in every other test.
+func TestEventsArriveDuringTheTurn(t *testing.T) {
+	sawFirst := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server cannot flush")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		fmt.Fprint(w, "data: "+chunk(map[string]any{"content": "first"})+"\n\n")
+		flusher.Flush()
+
+		select {
+		case <-sawFirst:
+		case <-time.After(5 * time.Second):
+			t.Error("the agent never surfaced the first frame - responses are being buffered")
+			return
+		}
+
+		fmt.Fprint(w, "data: "+chunk(map[string]any{"content": " and rest"})+"\n\n")
+		fmt.Fprint(w, "data: "+usageChunk()+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	a := New(provider.New(srv.URL, "k", "m"), []Tool{echoTool()})
+
+	var once sync.Once
+	var mu sync.Mutex
+	var got []string
+	a.OnEvent = func(e Event) {
+		if e.Kind == EventContent {
+			mu.Lock()
+			got = append(got, e.Text)
+			mu.Unlock()
+			once.Do(func() { close(sawFirst) })
+		}
+	}
+
+	out, err := a.Send(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if out != "first and rest" {
+		t.Errorf("answer = %q", out)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 2 {
+		t.Errorf("got %d content events, want them incrementally: %v", len(got), got)
+	}
+}
+
+// TestToolEventsFireAroundExecution checks the UI can report what is running.
+func TestToolEventsFireAroundExecution(t *testing.T) {
+	f := newFakeAPI(t,
+		toolCallReply("c1", "echo", `{"k":1}`, "thinking"),
+		answerReply("done"),
+	)
+	a := f.agent([]Tool{echoTool()})
+
+	var kinds []EventKind
+	var toolLabel string
+	a.OnEvent = func(e Event) {
+		kinds = append(kinds, e.Kind)
+		if e.Kind == EventToolStart {
+			toolLabel = e.Text
+		}
+	}
+
+	if _, err := a.Send(context.Background(), "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	var start, done, reasoning bool
+	for _, k := range kinds {
+		switch k {
+		case EventToolStart:
+			start = true
+		case EventToolDone:
+			done = true
+		case EventReasoning:
+			reasoning = true
+		}
+	}
+	if !start || !done {
+		t.Errorf("missing tool events: start=%v done=%v", start, done)
+	}
+	if !reasoning {
+		t.Error("reasoning was never surfaced to the UI")
+	}
+	if !strings.Contains(toolLabel, "echo") {
+		t.Errorf("tool label = %q, should name the tool", toolLabel)
+	}
+}
+
+// TestNoEventHandlerIsSafe: the agent must work headless, which is how most of
+// this suite drives it.
+func TestNoEventHandlerIsSafe(t *testing.T) {
+	f := newFakeAPI(t, answerReply("fine"))
+	a := f.agent([]Tool{echoTool()})
+	a.OnEvent = nil
+
+	got, err := a.Send(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got != "fine" {
+		t.Errorf("answer = %q", got)
+	}
 }

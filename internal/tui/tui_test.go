@@ -196,3 +196,101 @@ func TestRollVerbAvoidsRepeating(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamedContentAppearsWhileWorking(t *testing.T) {
+	m, _ := newTestModel()
+	m.working = true
+	m.started = time.Now()
+
+	for _, part := range []string{"Hel", "lo, ", "world"} {
+		next, cmd := m.Update(agent.Event{Kind: agent.EventContent, Text: part})
+		m = next.(Model)
+		if cmd == nil {
+			t.Fatal("must re-arm the event listener, or the stream stops after one token")
+		}
+	}
+
+	if m.answer != "Hello, world" {
+		t.Errorf("answer = %q", m.answer)
+	}
+	if view := m.View(); !strings.Contains(view, "Hello, world") {
+		t.Errorf("streamed text is not on screen:\n%s", view)
+	}
+}
+
+func TestStreamedReasoningIsShownAndTailLimited(t *testing.T) {
+	m, _ := newTestModel()
+	m.working = true
+	m.started = time.Now()
+
+	next, _ := m.Update(agent.Event{
+		Kind: agent.EventReasoning,
+		Text: "line1\nline2\nline3\nline4\nline5",
+	})
+	m = next.(Model)
+
+	view := m.View()
+	// Only the tail stays on screen; a thinking model can emit thousands of
+	// tokens and the input box must not be pushed off the bottom.
+	if strings.Contains(view, "line1") {
+		t.Error("old reasoning lines should scroll out of view")
+	}
+	if !strings.Contains(view, "line5") {
+		t.Errorf("latest reasoning missing:\n%s", view)
+	}
+}
+
+func TestToolStartShowsRealActionInsteadOfVerb(t *testing.T) {
+	m, _ := newTestModel()
+	m.working = true
+	m.started = time.Now()
+	m.answer = "partial text"
+
+	next, _ := m.Update(agent.Event{Kind: agent.EventToolStart, Text: "read_file main.go"})
+	m = next.(Model)
+
+	if last := m.lines[len(m.lines)-1]; !strings.Contains(last, "read_file main.go") {
+		t.Errorf("tool activity not in the transcript: %q", last)
+	}
+	if !strings.Contains(m.verb, "read_file") {
+		t.Errorf("verb = %q, want the real action", m.verb)
+	}
+	if m.answer != "" {
+		t.Error("a tool call ends the previous answer fragment; it should be cleared")
+	}
+}
+
+// TestReplyClearsStreamBuffers guards against the streamed text and the final
+// committed answer both being on screen at once.
+func TestReplyClearsStreamBuffers(t *testing.T) {
+	m, _ := newTestModel()
+	m.working = true
+	m.answer = "streamed so far"
+	m.think = "some thinking"
+
+	next, _ := m.Update(replyMsg{text: "the final answer"})
+	m = next.(Model)
+
+	if m.answer != "" || m.think != "" {
+		t.Error("live buffers should be cleared when the turn commits")
+	}
+	view := m.View()
+	if strings.Contains(view, "streamed so far") {
+		t.Errorf("streamed text shown twice:\n%s", view)
+	}
+	if !strings.Contains(view, "the final answer") {
+		t.Errorf("final answer missing:\n%s", view)
+	}
+}
+
+func TestTailLines(t *testing.T) {
+	if got := tailLines("a\nb\nc\nd", 2); got != "c\nd" {
+		t.Errorf("got %q, want \"c\\nd\"", got)
+	}
+	if got := tailLines("only", 3); got != "only" {
+		t.Errorf("got %q, want \"only\"", got)
+	}
+	if got := tailLines("a\nb\n", 2); got != "a\nb" {
+		t.Errorf("trailing newline should not count as a line: %q", got)
+	}
+}
