@@ -52,6 +52,34 @@ type Agent struct {
 	// them, so a non-interactive caller fails closed instead of silently
 	// writing files.
 	Confirm func(action, detail string) bool
+
+	// OnEvent reports progress during a turn. It is called on whichever
+	// goroutine drives Send, so a UI handler must hand off over a channel
+	// rather than touching widget state directly. May be nil.
+	OnEvent func(Event)
+}
+
+// EventKind distinguishes the progress reports a turn emits.
+type EventKind int
+
+const (
+	EventReasoning EventKind = iota // a slice of the model's thinking
+	EventContent                    // a slice of the visible answer
+	EventToolStart                  // a tool is about to run
+	EventToolDone                   // a tool finished
+)
+
+// Event is one progress report. Text carries the slice of streamed text, or the
+// tool's label for the tool events.
+type Event struct {
+	Kind EventKind
+	Text string
+}
+
+func (a *Agent) emit(kind EventKind, text string) {
+	if a.OnEvent != nil {
+		a.OnEvent(Event{Kind: kind, Text: text})
+	}
 }
 
 func New(c *provider.Client, tools []Tool) *Agent {
@@ -86,7 +114,14 @@ func (a *Agent) Send(ctx context.Context, input string) (string, error) {
 	a.history = append(a.history, provider.Message{Role: "user", Content: input})
 
 	for step := 0; step < maxSteps; step++ {
-		msg, usage, err := a.client.Chat(ctx, a.history, a.defs)
+		msg, usage, err := a.client.Chat(ctx, a.history, a.defs, func(d provider.Delta) {
+			if d.Reasoning != "" {
+				a.emit(EventReasoning, d.Reasoning)
+			}
+			if d.Content != "" {
+				a.emit(EventContent, d.Content)
+			}
+		})
 		if err != nil {
 			return "", err
 		}
@@ -121,20 +156,26 @@ func (a *Agent) runTool(ctx context.Context, tc provider.ToolCall) string {
 	}
 	args := json.RawMessage(tc.Function.Arguments)
 
+	detail := string(args)
+	if t.Describe != nil {
+		detail = t.Describe(args)
+	}
+
 	if t.NeedsConfirm {
 		if a.Confirm == nil {
 			return "error: " + tc.Function.Name + " requires the user's confirmation " +
 				"and no confirmation handler is attached, so it was not run"
-		}
-		detail := string(args)
-		if t.Describe != nil {
-			detail = t.Describe(args)
 		}
 		if !a.Confirm(tc.Function.Name, detail) {
 			return "error: the user declined this action. Do not retry it - " +
 				"ask them what they would prefer instead."
 		}
 	}
+
+	// Emitted after the gate, so the UI only ever claims to be running
+	// something that was actually approved.
+	a.emit(EventToolStart, tc.Function.Name+" "+detail)
+	defer a.emit(EventToolDone, tc.Function.Name)
 
 	out, err := t.Run(ctx, args)
 	if err != nil {
