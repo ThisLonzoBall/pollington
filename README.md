@@ -2,20 +2,19 @@
 
 A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
 
-> It can read your code, change it, run your build, and check its own work.
-> Streaming and the settings panel are not there yet.
+> It can read your code, change it, run your build, and check its own work,
+> streaming as it goes. The settings panel is not there yet.
 
 ## Status
 
 | Piece | State |
 |---|---|
-| OpenAI-compatible client | works, non-streaming |
+| OpenAI-compatible client | works, streaming (SSE) |
 | Tool-calling loop | works, 25-step cap |
 | `read_file`, `list_dir` | works |
 | `write_file`, `run_shell` | works, each gated behind a `y/n` prompt |
-| Tests | 28, no API key or network needed |
-| Bubble Tea UI | input, transcript, confirm prompt, token counter |
-| Streaming | TODO — biggest remaining win |
+| Tests | 62, no API key or network needed |
+| Bubble Tea UI | live stream, scrollback, spinner + elapsed, confirm prompt, token counter |
 | Settings panel (ctrl+s) | TODO |
 
 Never yet pointed at a real provider — every test runs against a fake server.
@@ -56,6 +55,18 @@ POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b p
 
 Model IDs move fast — confirm the current one in your provider's console.
 
+### Keys
+
+| Key | Does |
+|---|---|
+| `enter` | send |
+| `pgup` / `pgdn`, `ctrl+u` / `ctrl+d`, `home` / `end` | scroll the transcript |
+| `y` / `n` | answer a permission prompt |
+| `ctrl+c` | quit |
+
+Arrow keys are left to the input box deliberately — stealing them for scrolling
+would break cursor movement while typing.
+
 ### Five things the code is deliberately careful about
 
 **Reasoning content is kept in history.** MiniMax's models think between tool
@@ -86,6 +97,18 @@ the shell, and a surviving grandchild holds the output pipe open — so
 `CombinedOutput` blocks past the deadline and the timeout does nothing. Found by
 `TestRunShellTimesOut`, which took 30 seconds before the fix and 0.16 after.
 
+**Reasoning streams live; a split tag never leaks.** Providers deliver
+reasoning either in a `reasoning_content` field or wrapped in `<think>` tags
+inside `content` — and a tag can straddle a frame boundary, arriving as `"<thi"`
+then `"nk>"`. `thinkSplitter` holds back a trailing partial tag until the next
+frame resolves it, while releasing real text immediately: buffering reasoning
+until the closing tag would leave the screen blank through the longest part of
+the turn, which is the exact problem streaming exists to solve.
+
+**Tool-call arguments are reassembled by index.** Arguments arrive as JSON
+fragments across many frames, and the follow-up frames carry neither `id` nor
+`name` — only the index ties them to the call they belong to.
+
 **Errors name the URL they used.** `api.minimax.io` (global) and
 `api.minimaxi.com` (China) are separate platforms with separate keys, and the
 wrong pairing returns a generic auth failure. Printing the URL turns that into
@@ -94,20 +117,26 @@ a five-second fix.
 ## Tests
 
 ```sh
-go test ./...          # 28 tests, no API key, no network, no cost
+go test ./...          # 62 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 
 Every test runs against an `httptest` server that replays canned model
-responses, so the loop, the reasoning-retention rule, the cache ordering and the
-permission gate are all verified offline.
+responses, so the loop, the reasoning-retention rule, the cache ordering, the
+permission gate and the SSE parser are all verified offline.
+
+One test deserves a mention: `TestEventsArriveDuringTheTurn` has the fake
+server write one frame, flush, then **block** until the agent has surfaced it.
+If the client buffered the response instead of streaming it, that deadlocks.
+A buffering bug is invisible in every other test, because the final answer is
+identical either way.
 
 ## Layout
 
 ```
 main.go                       wiring
 internal/config/              settings, presets, ~/.config/pollington/config.json
-internal/provider/            OpenAI-compatible HTTP client
+internal/provider/            OpenAI-compatible client, SSE parsing, <think> splitting
 internal/agent/agent.go       the tool-calling loop, truncation, the confirm gate
 internal/agent/tools.go       read_file, list_dir, write_file, run_shell
 internal/agent/shell_unix.go  process-group kill (and shell_other.go elsewhere)
