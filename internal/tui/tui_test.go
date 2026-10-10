@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +293,128 @@ func TestTailLines(t *testing.T) {
 	}
 	if got := tailLines("a\nb\n", 2); got != "a\nb" {
 		t.Errorf("trailing newline should not count as a line: %q", got)
+	}
+}
+
+// sized returns a model that has received a window size, so the viewport is
+// live rather than falling back to plain line printing.
+func sized(t *testing.T, w, h int) Model {
+	t.Helper()
+	m, _ := newTestModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return next.(Model)
+}
+
+func TestViewportTakesOverOnceSized(t *testing.T) {
+	m, _ := newTestModel()
+	if m.ready {
+		t.Fatal("should not be ready before a WindowSizeMsg")
+	}
+	// Still renders, so the first frame is never blank.
+	if !strings.Contains(m.View(), "ctrl+c to quit") {
+		t.Error("pre-size fallback did not render the transcript")
+	}
+
+	m = sized(t, 80, 24)
+	if !m.ready {
+		t.Fatal("not ready after a WindowSizeMsg")
+	}
+	if m.vp.Height != 24-chromeHeight {
+		t.Errorf("viewport height = %d, want %d", m.vp.Height, 24-chromeHeight)
+	}
+	if m.vp.Width != 80 {
+		t.Errorf("viewport width = %d, want 80", m.vp.Width)
+	}
+}
+
+// TestTranscriptDoesNotOverflowTheTerminal is the actual bug from #4: before
+// the viewport, View returned every line ever printed, so a long session pushed
+// the input box off the bottom of the screen.
+func TestTranscriptDoesNotOverflowTheTerminal(t *testing.T) {
+	const height = 24
+	m := sized(t, 80, height)
+
+	for i := 0; i < 500; i++ {
+		m.push(fmt.Sprintf("line %d", i))
+	}
+
+	got := strings.Count(m.View(), "\n") + 1
+	if got > height {
+		t.Errorf("view is %d rows tall in a %d-row terminal", got, height)
+	}
+	// And the input box survived.
+	if !strings.Contains(m.View(), ">") {
+		t.Error("the input prompt was pushed off screen")
+	}
+}
+
+func TestNewLinesScrollIntoView(t *testing.T) {
+	m := sized(t, 80, 24)
+	for i := 0; i < 200; i++ {
+		m.push(fmt.Sprintf("line %d", i))
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "line 199") {
+		t.Error("the newest line is not visible - the viewport did not follow the bottom")
+	}
+	if strings.Contains(view, "line 0") {
+		t.Error("the oldest line should have scrolled away")
+	}
+}
+
+func TestScrollKeysGoToTranscriptNotInput(t *testing.T) {
+	m := sized(t, 80, 24)
+	for i := 0; i < 200; i++ {
+		m.push(fmt.Sprintf("line %d", i))
+	}
+	atBottom := m.vp.YOffset
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = next.(Model)
+
+	if m.vp.YOffset >= atBottom {
+		t.Errorf("pgup did not scroll the transcript (offset %d -> %d)", atBottom, m.vp.YOffset)
+	}
+	// Crucially it must not have been typed into the prompt.
+	if m.input.Value() != "" {
+		t.Errorf("scroll key leaked into the input: %q", m.input.Value())
+	}
+}
+
+func TestOrdinaryTypingStillReachesTheInput(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	for _, s := range []string{"h", "i"} {
+		next, _ := m.Update(key(s))
+		m = next.(Model)
+	}
+	if m.input.Value() != "hi" {
+		t.Errorf("input = %q, want hi - routing broke normal typing", m.input.Value())
+	}
+}
+
+func TestTranscriptIsBounded(t *testing.T) {
+	m := sized(t, 80, 24)
+	for i := 0; i < maxTranscriptLines+500; i++ {
+		m.push("x")
+	}
+	if len(m.lines) > maxTranscriptLines {
+		t.Errorf("transcript grew to %d lines, cap is %d", len(m.lines), maxTranscriptLines)
+	}
+}
+
+func TestResizeKeepsTranscript(t *testing.T) {
+	m := sized(t, 80, 24)
+	m.push("important line")
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	if m.vp.Height != 40-chromeHeight {
+		t.Errorf("height after resize = %d", m.vp.Height)
+	}
+	if !strings.Contains(m.View(), "important line") {
+		t.Error("resize lost the transcript contents")
 	}
 }

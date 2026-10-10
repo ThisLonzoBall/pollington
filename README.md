@@ -13,8 +13,8 @@ A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
 | Tool-calling loop | works, 25-step cap |
 | `read_file`, `list_dir` | works |
 | `write_file`, `run_shell` | works, each gated behind a `y/n` prompt |
-| Tests | 55, no API key or network needed |
-| Bubble Tea UI | live stream, spinner + elapsed, confirm prompt, token counter |
+| Tests | 62, no API key or network needed |
+| Bubble Tea UI | live stream, scrollback, spinner + elapsed, confirm prompt, token counter |
 | Settings panel (ctrl+s) | TODO |
 
 Never yet pointed at a real provider — every test runs against a fake server.
@@ -54,6 +54,18 @@ POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b p
 ```
 
 Model IDs move fast — confirm the current one in your provider's console.
+
+### Keys
+
+| Key | Does |
+|---|---|
+| `enter` | send |
+| `pgup` / `pgdn`, `ctrl+u` / `ctrl+d`, `home` / `end` | scroll the transcript |
+| `y` / `n` | answer a permission prompt |
+| `ctrl+c` | quit |
+
+Arrow keys are left to the input box deliberately — stealing them for scrolling
+would break cursor movement while typing.
 
 ### Five things the code is deliberately careful about
 
@@ -105,7 +117,7 @@ a five-second fix.
 ## Tests
 
 ```sh
-go test ./...          # 55 tests, no API key, no network, no cost
+go test ./...          # 62 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 
