@@ -24,12 +24,32 @@ Never yet pointed at a real provider — every test runs against a fake server.
 Needs Go 1.23 or newer — a dependency requires it, so the version in Ubuntu 24.04's
 apt (1.22) will not build this. Built and verified against Go 1.27.1.
 
+### Without an API key
+
+There is a scripted fake provider in the repo, so you can see the whole thing
+work — streaming, tool calls, the permission prompt, the token counter — with no
+key, no network and nothing spent:
+
+```sh
+go run ./cmd/fakeprovider &
+POLLINGTON_BASE_URL=http://localhost:8711/v1 POLLINGTON_API_KEY=unused go run .
+```
+
+Then ask it anything. It replies from a fixed script that walks the agent
+through listing the directory, reading the README, and running `go build` —
+which is where the `y/n` prompt appears. It is not a model and does not read
+your question.
+
+### With a real provider
+
 ```sh
 export MINIMAX_API_KEY=sk-...
 go run .
 ```
 
-Without a key it exits 1 with a message rather than failing at the first request.
+A new MiniMax account comes with trial credit, far more than a session of
+testing costs. Without a key it exits 1 with a message rather than failing at
+the first request.
 
 ## Design
 
@@ -141,4 +161,5 @@ internal/agent/agent.go       the tool-calling loop, truncation, the confirm gat
 internal/agent/tools.go       read_file, list_dir, write_file, run_shell
 internal/agent/shell_unix.go  process-group kill (and shell_other.go elsewhere)
 internal/tui/                 Bubble Tea front end
+cmd/fakeprovider/             scripted endpoint for running without a key
 ```
