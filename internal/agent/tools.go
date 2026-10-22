@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -220,8 +221,13 @@ func runShell() Tool {
 			res := string(out)
 
 			switch {
+			// A timeout and a user interrupt both land here as a dead process,
+			// but they mean different things to the model: one is the command's
+			// fault, the other is not.
+			case errors.Is(ctx.Err(), context.DeadlineExceeded):
+				return res + fmt.Sprintf("\n(killed: exceeded the %s timeout)", shellTimeout), nil
 			case ctx.Err() != nil:
-				return res + fmt.Sprintf("\n(killed: no output for %s)", shellTimeout), nil
+				return res + "\n(killed: interrupted by the user)", nil
 			case runErr != nil:
 				return res + fmt.Sprintf("\n(command failed: %v)", runErr), nil
 			case strings.TrimSpace(res) == "":

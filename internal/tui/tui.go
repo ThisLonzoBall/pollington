@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -89,6 +90,9 @@ type Model struct {
 
 	vp    viewport.Model
 	ready bool // set once a WindowSizeMsg has given the viewport a size
+
+	// cancel stops the turn currently in flight. Non-nil only while working.
+	cancel context.CancelFunc
 }
 
 // push appends a transcript line and keeps the viewport pinned to the bottom,
@@ -246,8 +250,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
 			return m, tea.Quit
+
+		case tea.KeyEsc:
+			// Esc deliberately never quits. Losing a whole conversation to a
+			// stray keypress is worse than any benefit of a second quit key,
+			// and the reason this exists is to stop a turn *without* that.
+			if m.working && m.cancel != nil {
+				m.cancel()
+			}
+			return m, nil
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" || m.working {
@@ -259,18 +272,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.started = time.Now()
 			m.verb = m.rollVerb()
 			m.answer, m.think = "", ""
-			return m, tea.Batch(m.ask(text), nextVerb())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			return m, tea.Batch(m.ask(ctx, text), nextVerb())
 		}
 
 	case replyMsg:
 		m.working = false
+		if m.cancel != nil {
+			m.cancel() // release the context even on the happy path
+			m.cancel = nil
+		}
 		// The streamed text has already been on screen; commit the authoritative
 		// copy to the transcript and clear the live buffers so it is not shown
 		// twice.
 		m.answer, m.think = "", ""
-		if msg.err != nil {
+		switch {
+		case errors.Is(msg.err, context.Canceled):
+			// Not a failure - the user asked for this.
+			m.push(statusStyle.Render("  stopped"))
+		case msg.err != nil:
 			m.push(errorStyle.Render("error ") + msg.err.Error())
-		} else {
+		default:
 			m.push(botStyle.Render("pollington ") + msg.text)
 		}
 		return m, nil
@@ -308,9 +332,9 @@ func (m Model) answerConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ask runs the agent off the UI goroutine. Bubble Tea delivers the result back
 // as a replyMsg, while progress arrives separately over eventCh.
-func (m Model) ask(text string) tea.Cmd {
+func (m Model) ask(ctx context.Context, text string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := m.agent.Send(context.Background(), text)
+		out, err := m.agent.Send(ctx, text)
 		return replyMsg{text: out, err: err}
 	}
 }

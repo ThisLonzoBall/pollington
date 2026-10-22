@@ -10,7 +10,7 @@
     <img alt="CI" src="https://github.com/ThisLonzoBall/pollington/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Go 1.23+" src="https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white">
-  <img alt="63 tests" src="https://img.shields.io/badge/tests-63-brightgreen">
+  <img alt="74 tests" src="https://img.shields.io/badge/tests-74-brightgreen">
   <img alt="no key required to try" src="https://img.shields.io/badge/try%20it-no%20API%20key-blueviolet">
 </p>
 
@@ -94,9 +94,16 @@ Settings live at `~/.config/pollington/config.json`, mode `0600`.
 | Key | Does |
 |---|---|
 | `enter` | send |
-| `pgup` / `pgdn`, `ctrl+u` / `ctrl+d`, `home` / `end` | scroll the transcript |
+| `esc` | stop the turn in flight, keeping the conversation |
 | `y` / `n` | answer a permission prompt |
+| `pgup` / `pgdn`, `ctrl+u` / `ctrl+d`, `home` / `end` | scroll the transcript |
 | `ctrl+c` | quit |
+
+**`esc` never quits.** Losing a whole conversation to a stray keypress is worse
+than having a second quit key — and stopping a turn *without* that is the entire
+reason it exists. It also kills a running shell command, not merely the wait for
+it. While a permission prompt is up, `esc` declines that tool and leaves the
+turn running.
 
 Arrow keys are left to the input box deliberately — stealing them for scrolling
 would break cursor movement while typing.
@@ -134,8 +141,9 @@ the care needed to make it behave.
 | Tool-calling loop | 25-step cap |
 | `read_file`, `list_dir` | sandboxed to the working directory |
 | `write_file`, `run_shell` | gated behind a `y/n` prompt |
+| Cancel a turn | `esc`, leaving history intact and valid |
 | UI | live stream, scrollback, spinner + elapsed, token counter |
-| Tests | 63, no API key or network |
+| Tests | 74, no API key or network |
 | Settings panel (`ctrl+s`) | planned |
 | Live cost per provider | planned |
 
@@ -214,6 +222,24 @@ took 30 seconds before the fix and 0.16 after.
 </details>
 
 <details>
+<summary><strong>Cancelling a turn cannot corrupt the conversation</strong></summary>
+
+The API requires every `tool_call` in an assistant message to have a matching
+tool result. Interrupt at the wrong moment and you can leave a call unanswered —
+which does not fail now, it fails confusingly on the *next* request.
+
+Both interrupt points are covered. Cancelling during the model call returns
+before the assistant message is appended, so history ends on the user's message.
+Cancelling during a tool run still records a result for every call, because
+`runTool` turns a failure into a result the model can read rather than aborting.
+`assertHistoryValid` in `cancel_test.go` asserts the invariant directly.
+
+A timeout and a user interrupt also read differently to the model —
+`exceeded the 30s timeout` versus `interrupted by the user` — because one is the
+command's fault and the other is not.
+</details>
+
+<details>
 <summary><strong>Errors name the URL they used</strong></summary>
 
 `api.minimax.io` (global) and `api.minimaxi.com` (mainland China) are separate
@@ -224,7 +250,7 @@ failure. Printing the URL turns a twenty-minute hunt into a five-second fix.
 ## Tests
 
 ```sh
-go test ./...          # 63 tests, no API key, no network, no cost
+go test ./...          # 74 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 
