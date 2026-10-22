@@ -19,10 +19,13 @@ import (
 // rather than a const so tests can exercise the kill path in milliseconds.
 var shellTimeout = 30 * time.Second
 
-// DefaultTools is the full set. read_file and list_dir are harmless;
-// write_file and run_shell can destroy work, so both set NeedsConfirm.
-func DefaultTools() []Tool {
-	return []Tool{readFile(), listDir(), writeFile(), runShell()}
+// DefaultTools is the full set, sandboxed to root. read_file and list_dir are
+// harmless; write_file and run_shell can destroy work, so both set NeedsConfirm.
+//
+// root is resolved once at startup rather than read from the process working
+// directory per call, so the sandbox cannot move if anything ever chdirs.
+func DefaultTools(root string) []Tool {
+	return []Tool{readFile(root), listDir(root), writeFile(root), runShell(root)}
 }
 
 func schema(props map[string]any, required ...string) map[string]any {
@@ -33,7 +36,7 @@ func schema(props map[string]any, required ...string) map[string]any {
 	}
 }
 
-func readFile() Tool {
+func readFile(root string) Tool {
 	return Tool{
 		Def: provider.Tool{
 			Type: "function",
@@ -52,7 +55,7 @@ func readFile() Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("bad arguments: %w", err)
 			}
-			p, err := safePath(a.Path)
+			p, err := safePath(root, a.Path)
 			if err != nil {
 				return "", err
 			}
@@ -65,7 +68,7 @@ func readFile() Tool {
 	}
 }
 
-func listDir() Tool {
+func listDir(root string) Tool {
 	return Tool{
 		Def: provider.Tool{
 			Type: "function",
@@ -85,7 +88,7 @@ func listDir() Tool {
 			if a.Path == "" {
 				a.Path = "."
 			}
-			p, err := safePath(a.Path)
+			p, err := safePath(root, a.Path)
 			if err != nil {
 				return "", err
 			}
@@ -111,7 +114,7 @@ type writeArgs struct {
 	Content string `json:"content"`
 }
 
-func writeFile() Tool {
+func writeFile(root string) Tool {
 	return Tool{
 		NeedsConfirm: true,
 		Def: provider.Tool{
@@ -132,7 +135,7 @@ func writeFile() Tool {
 				return string(raw)
 			}
 			verb := "overwrite"
-			if p, err := safePath(a.Path); err == nil {
+			if p, err := safePath(root, a.Path); err == nil {
 				if _, err := os.Stat(p); os.IsNotExist(err) {
 					verb = "create"
 				}
@@ -148,7 +151,7 @@ func writeFile() Tool {
 			if a.Path == "" {
 				return "", fmt.Errorf("path is required")
 			}
-			p, err := safePath(a.Path)
+			p, err := safePath(root, a.Path)
 			if err != nil {
 				return "", err
 			}
@@ -167,7 +170,7 @@ type shellArgs struct {
 	Command string `json:"command"`
 }
 
-func runShell() Tool {
+func runShell(root string) Tool {
 	return Tool{
 		NeedsConfirm: true,
 		Def: provider.Tool{
@@ -199,16 +202,11 @@ func runShell() Tool {
 			if strings.TrimSpace(a.Command) == "" {
 				return "", fmt.Errorf("command is required")
 			}
-			wd, err := os.Getwd()
-			if err != nil {
-				return "", err
-			}
-
 			ctx, cancel := context.WithTimeout(ctx, shellTimeout)
 			defer cancel()
 
 			cmd := exec.CommandContext(ctx, "sh", "-c", a.Command)
-			cmd.Dir = wd
+			cmd.Dir = root
 
 			// Kill the whole process group on timeout, not just the shell, and
 			// keep WaitDelay as a backstop so a descendant holding the output
@@ -238,20 +236,16 @@ func runShell() Tool {
 	}
 }
 
-// safePath keeps the model inside the working directory. A model that has
-// talked itself into reading ~/.ssh/id_rsa is not a hypothetical.
-func safePath(p string) (string, error) {
-	wd, err := os.Getwd()
+// safePath keeps the model inside the project root. A model that has talked
+// itself into reading ~/.ssh/id_rsa is not a hypothetical.
+func safePath(root, p string) (string, error) {
+	abs, err := filepath.Abs(filepath.Join(root, p))
 	if err != nil {
 		return "", err
 	}
-	abs, err := filepath.Abs(filepath.Join(wd, p))
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(wd, abs)
+	rel, err := filepath.Rel(root, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q is outside the working directory", p)
+		return "", fmt.Errorf("path %q is outside the project root", p)
 	}
 	return abs, nil
 }

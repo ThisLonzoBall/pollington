@@ -135,7 +135,7 @@ func TestCancelDuringToolRun(t *testing.T) {
 // TestCancelKillsRunningShellCommand: Esc should stop a runaway command, not
 // just stop waiting for it.
 func TestCancelKillsRunningShellCommand(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -144,7 +144,7 @@ func TestCancelKillsRunningShellCommand(t *testing.T) {
 	}()
 
 	start := time.Now()
-	out, err := runShell().Run(ctx, json.RawMessage(`{"command":"sleep 30"}`))
+	out, err := runShell(root).Run(ctx, json.RawMessage(`{"command":"sleep 30"}`))
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {
@@ -156,13 +156,13 @@ func TestCancelKillsRunningShellCommand(t *testing.T) {
 // TestShellDistinguishesTimeoutFromInterrupt: both leave a dead process, but
 // they mean different things to the model reading the result.
 func TestShellDistinguishesTimeoutFromInterrupt(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
 	t.Run("user interrupt", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() { time.Sleep(150 * time.Millisecond); cancel() }()
 
-		out, err := runShell().Run(ctx, json.RawMessage(`{"command":"sleep 30"}`))
+		out, err := runShell(root).Run(ctx, json.RawMessage(`{"command":"sleep 30"}`))
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -176,7 +176,7 @@ func TestShellDistinguishesTimeoutFromInterrupt(t *testing.T) {
 		shellTimeout = 150 * time.Millisecond
 		t.Cleanup(func() { shellTimeout = old })
 
-		out, err := runShell().Run(context.Background(), json.RawMessage(`{"command":"sleep 30"}`))
+		out, err := runShell(root).Run(context.Background(), json.RawMessage(`{"command":"sleep 30"}`))
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}

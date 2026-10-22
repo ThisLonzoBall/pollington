@@ -18,8 +18,17 @@ func run(t *testing.T, tool Tool, args string) (string, error) {
 	return tool.Run(context.Background(), json.RawMessage(args))
 }
 
-// chdir points the process at dir for the duration of the test, which is what
-// safePath resolves against. testing.T.Chdir does this natively but needs Go
+// sandbox returns a fresh directory to use as the project root, and points the
+// process at it so tests can use relative paths when checking the disk.
+func sandbox(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	chdir(t, dir)
+	return dir
+}
+
+// chdir points the process at dir for the duration of the test, so relative
+// paths in assertions resolve there. testing.T.Chdir does this natively but needs Go
 // 1.24, and the module floor is 1.23 - there is no reason to raise the version
 // every user needs for a test convenience. Working directory is process-wide, so
 // these tests must not call t.Parallel.
@@ -40,8 +49,8 @@ func chdir(t *testing.T, dir string) {
 }
 
 func TestWriteFileWritesToDisk(t *testing.T) {
-	chdir(t, t.TempDir())
-	w := writeFile()
+	root := sandbox(t)
+	w := writeFile(root)
 
 	out, err := run(t, w, `{"path":"hello.txt","content":"line one\nline two\n"}`)
 	if err != nil {
@@ -61,9 +70,9 @@ func TestWriteFileWritesToDisk(t *testing.T) {
 }
 
 func TestWriteFileCreatesParentDirs(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
-	if _, err := run(t, writeFile(), `{"path":"a/b/c/deep.txt","content":"x"}`); err != nil {
+	if _, err := run(t, writeFile(root), `{"path":"a/b/c/deep.txt","content":"x"}`); err != nil {
 		t.Fatalf("write_file: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join("a", "b", "c", "deep.txt")); err != nil {
@@ -72,12 +81,12 @@ func TestWriteFileCreatesParentDirs(t *testing.T) {
 }
 
 func TestWriteFileOverwrites(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 	if err := os.WriteFile("x.txt", []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := run(t, writeFile(), `{"path":"x.txt","content":"new"}`); err != nil {
+	if _, err := run(t, writeFile(root), `{"path":"x.txt","content":"new"}`); err != nil {
 		t.Fatalf("write_file: %v", err)
 	}
 	got, _ := os.ReadFile("x.txt")
@@ -89,11 +98,11 @@ func TestWriteFileOverwrites(t *testing.T) {
 // TestWriteFileDescribeDistinguishesCreateFromOverwrite matters for the
 // confirmation prompt: "overwrite main.go" deserves more care than "create".
 func TestWriteFileDescribeDistinguishesCreateFromOverwrite(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 	if err := os.WriteFile("exists.txt", []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := writeFile()
+	w := writeFile(root)
 
 	if d := w.Describe(json.RawMessage(`{"path":"exists.txt","content":"y"}`)); !strings.Contains(d, "overwrite") {
 		t.Errorf("describe = %q, want 'overwrite'", d)
@@ -104,19 +113,19 @@ func TestWriteFileDescribeDistinguishesCreateFromOverwrite(t *testing.T) {
 }
 
 func TestWriteFileRejectsEscape(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
 	for _, bad := range []string{"../escaped.txt", "../../etc/passwd", "a/../../out.txt"} {
-		if _, err := run(t, writeFile(), `{"path":"`+bad+`","content":"x"}`); err == nil {
+		if _, err := run(t, writeFile(root), `{"path":"`+bad+`","content":"x"}`); err == nil {
 			t.Errorf("path %q was accepted, should be rejected", bad)
 		}
 	}
 }
 
 func TestReadFileRejectsEscape(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
-	if _, err := run(t, readFile(), `{"path":"../../../etc/passwd"}`); err == nil {
+	if _, err := run(t, readFile(root), `{"path":"../../../etc/passwd"}`); err == nil {
 		t.Error("read outside the working directory was allowed")
 	}
 }
@@ -125,9 +134,9 @@ func TestRunShellCapturesOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
-	out, err := run(t, runShell(), `{"command":"echo hello"}`)
+	out, err := run(t, runShell(root), `{"command":"echo hello"}`)
 	if err != nil {
 		t.Fatalf("run_shell: %v", err)
 	}
@@ -143,9 +152,9 @@ func TestRunShellReportsFailureWithoutError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
-	out, err := run(t, runShell(), `{"command":"echo to-stderr >&2; exit 3"}`)
+	out, err := run(t, runShell(root), `{"command":"echo to-stderr >&2; exit 3"}`)
 	if err != nil {
 		t.Fatalf("a failing command must not be a Go error: %v", err)
 	}
@@ -163,11 +172,12 @@ func TestRunShellRunsInWorkingDirectory(t *testing.T) {
 	}
 	dir := t.TempDir()
 	chdir(t, dir)
+	root := dir
 	if err := os.WriteFile("marker.txt", []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := run(t, runShell(), `{"command":"ls"}`)
+	out, err := run(t, runShell(root), `{"command":"ls"}`)
 	if err != nil {
 		t.Fatalf("run_shell: %v", err)
 	}
@@ -180,14 +190,14 @@ func TestRunShellTimesOut(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
 	old := shellTimeout
 	shellTimeout = 150 * time.Millisecond
 	t.Cleanup(func() { shellTimeout = old })
 
 	start := time.Now()
-	out, err := run(t, runShell(), `{"command":"sleep 30"}`)
+	out, err := run(t, runShell(root), `{"command":"sleep 30"}`)
 	if err != nil {
 		t.Fatalf("a timeout must come back as a readable result: %v", err)
 	}
@@ -200,19 +210,19 @@ func TestRunShellTimesOut(t *testing.T) {
 }
 
 func TestRunShellRejectsEmpty(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
-	if _, err := run(t, runShell(), `{"command":"   "}`); err == nil {
+	if _, err := run(t, runShell(root), `{"command":"   "}`); err == nil {
 		t.Error("an empty command should be rejected")
 	}
 }
 
 func TestToolsRejectMalformedArguments(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
 	// Small models do emit broken JSON here, so every tool must return a
 	// readable error rather than panicking.
-	for _, tool := range []Tool{readFile(), writeFile(), runShell()} {
+	for _, tool := range []Tool{readFile(root), writeFile(root), runShell(root)} {
 		name := tool.Def.Function.Name
 		if _, err := run(t, tool, `{"path": broken`); err == nil {
 			t.Errorf("%s accepted malformed JSON", name)
@@ -221,7 +231,7 @@ func TestToolsRejectMalformedArguments(t *testing.T) {
 }
 
 func TestListDirMarksDirectories(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 	if err := os.Mkdir("sub", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +239,7 @@ func TestListDirMarksDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := run(t, listDir(), `{}`)
+	out, err := run(t, listDir(root), `{}`)
 	if err != nil {
 		t.Fatalf("list_dir: %v", err)
 	}
