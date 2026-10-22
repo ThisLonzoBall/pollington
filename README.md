@@ -10,7 +10,7 @@
     <img alt="CI" src="https://github.com/ThisLonzoBall/pollington/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Go 1.23+" src="https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white">
-  <img alt="74 tests" src="https://img.shields.io/badge/tests-74-brightgreen">
+  <img alt="82 tests" src="https://img.shields.io/badge/tests-82-brightgreen">
   <img alt="no key required to try" src="https://img.shields.io/badge/try%20it-no%20API%20key-blueviolet">
 </p>
 
@@ -62,11 +62,38 @@ Type anything and press enter. It lists the directory, reads this README, then
 asks permission to run `go build` — press `y`. It is not a model and ignores
 your question; everything else is real.
 
+## Install
+
+```sh
+go install github.com/ThisLonzoBall/pollington@latest
+```
+
+That puts a `pollington` binary in `$(go env GOPATH)/bin` — add it to your PATH
+if it is not already:
+
+```sh
+export PATH="$(go env GOPATH)/bin:$PATH"   # and put this in ~/.bashrc
+```
+
+Then run `pollington` from anywhere.
+
+### It anchors to the project, not your shell
+
+`pollington` walks up from wherever you launch it looking for `.git`, and uses
+that directory as the project root. Run it from `internal/tui/` deep inside a
+repository and the model still sees paths like `internal/tui/tui.go`, and shell
+commands still run where your build expects. The root is shown in the header.
+
+The root is also the sandbox: file tools cannot read or write outside it, and
+that boundary is fixed when the program starts, so nothing can widen it later by
+changing directory. With no repository anywhere above you, the root is just the
+current directory — narrow by default rather than creeping up to a parent.
+
 ## With a real model
 
 ```sh
 export MINIMAX_API_KEY=sk-...
-go run .
+pollington
 ```
 
 Needs **Go 1.23 or newer** — a dependency requires it, so Ubuntu 24.04's apt
@@ -139,11 +166,12 @@ the care needed to make it behave.
 |---|---|
 | OpenAI-compatible client | streaming (SSE) |
 | Tool-calling loop | 25-step cap |
-| `read_file`, `list_dir` | sandboxed to the working directory |
+| `read_file`, `list_dir` | sandboxed to the project root |
 | `write_file`, `run_shell` | gated behind a `y/n` prompt |
 | Cancel a turn | `esc`, leaving history intact and valid |
+| Project root | found by walking up for `.git`; pins the sandbox |
 | UI | live stream, scrollback, spinner + elapsed, token counter |
-| Tests | 74, no API key or network |
+| Tests | 82, no API key or network |
 | Settings panel (`ctrl+s`) | planned |
 | Live cost per provider | planned |
 
@@ -250,7 +278,7 @@ failure. Printing the URL turns a twenty-minute hunt into a five-second fix.
 ## Tests
 
 ```sh
-go test ./...          # 74 tests, no API key, no network, no cost
+go test ./...          # 82 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 

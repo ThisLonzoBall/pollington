@@ -209,7 +209,8 @@ func TestReasoningSurvivesInHistory(t *testing.T) {
 // iteration, so deriving the tool list from the map would reorder the front of
 // the prompt on every request and miss the cache every time.
 func TestToolOrderIsStable(t *testing.T) {
-	tools := []Tool{runShell(), readFile(), writeFile(), listDir()}
+	root := t.TempDir()
+	tools := []Tool{runShell(root), readFile(root), writeFile(root), listDir(root)}
 	first := New(provider.New("http://unused", "k", "m"), tools).defs
 
 	var names []string
@@ -285,7 +286,7 @@ func TestConfirmDetailUsesDescribe(t *testing.T) {
 		toolCallReply("call_1", "write_file", `{"path":"x.txt","content":"hi\nthere"}`, ""),
 		answerReply("ok"),
 	)
-	a := f.agent([]Tool{writeFile()})
+	a := f.agent([]Tool{writeFile(t.TempDir())})
 	a.Confirm = func(_, detail string) bool { gotDetail = detail; return false }
 
 	if _, err := a.Send(context.Background(), "go"); err != nil {
@@ -390,7 +391,7 @@ func TestAPIErrorSurfacesURL(t *testing.T) {
 // Everything is real except the model itself - real tools, real disk, real
 // shell, real confirmation gate.
 func TestEndToEndWriteThenVerify(t *testing.T) {
-	chdir(t, t.TempDir())
+	root := sandbox(t)
 
 	f := newFakeAPI(t,
 		toolCallReply("c1", "write_file",
@@ -402,7 +403,7 @@ func TestEndToEndWriteThenVerify(t *testing.T) {
 	)
 
 	var approved []string
-	a := f.agent(DefaultTools())
+	a := f.agent(DefaultTools(root))
 	a.Confirm = func(action, detail string) bool {
 		approved = append(approved, action+": "+detail)
 		return true

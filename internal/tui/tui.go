@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -93,6 +94,18 @@ type Model struct {
 
 	// cancel stops the turn currently in flight. Non-nil only while working.
 	cancel context.CancelFunc
+
+	root string // the project the agent is anchored to, shown in the header
+}
+
+// shortenHome swaps the home directory for ~ so the header stays readable in a
+// narrow terminal.
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	return "~" + p[len(home):]
 }
 
 // push appends a transcript line and keeps the viewport pinned to the bottom,
@@ -108,7 +121,7 @@ func (m *Model) push(line string) {
 	}
 }
 
-func New(a *agent.Agent) Model {
+func New(a *agent.Agent, root string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "ask pollington something"
 	ti.Focus()
@@ -138,7 +151,9 @@ func New(a *agent.Agent) Model {
 		verb:      verbs[0],
 		confirmCh: ch,
 		eventCh:   ev,
-		lines:     []string{statusStyle.Render("pollington - ctrl+c to quit")},
+		root:      root,
+		lines: []string{statusStyle.Render(
+			"pollington  " + shortenHome(root) + "  esc stops a turn, ctrl+c quits")},
 	}
 }
 

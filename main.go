@@ -23,10 +23,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := provider.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
-	a := agent.New(client, agent.DefaultTools())
+	// Anchor every tool at the project root rather than the directory this
+	// happened to be launched from, so paths the model uses are stable and
+	// shell commands run where the build expects to.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "pollington:", err)
+		os.Exit(1)
+	}
+	root := agent.FindRoot(cwd)
 
-	if _, err := tea.NewProgram(tui.New(a), tea.WithAltScreen()).Run(); err != nil {
+	client := provider.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
+	a := agent.New(client, agent.DefaultTools(root))
+
+	if _, err := tea.NewProgram(tui.New(a, root), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "pollington:", err)
 		os.Exit(1)
 	}
