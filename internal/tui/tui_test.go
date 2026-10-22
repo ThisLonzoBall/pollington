@@ -418,3 +418,24 @@ func TestResizeKeepsTranscript(t *testing.T) {
 		t.Error("resize lost the transcript contents")
 	}
 }
+
+// TestSizedInputShowsFullPlaceholder guards a bubbles quirk: with Width left at
+// 0, textinput truncates its placeholder to one character, so the prompt read
+// "> a" instead of inviting the user to type.
+func TestSizedInputShowsFullPlaceholder(t *testing.T) {
+	m, _ := newTestModel()
+	if got := m.input.View(); strings.Contains(got, "ask pollington") {
+		t.Skip("bubbles no longer truncates an unsized placeholder")
+	}
+
+	m = sized(t, 80, 24)
+	if m.input.Width <= 0 {
+		t.Fatalf("input width = %d, should be set from the window size", m.input.Width)
+	}
+	if got := m.input.View(); !strings.Contains(got, "ask pollington something") {
+		t.Errorf("placeholder still truncated: %q", got)
+	}
+	if !strings.Contains(m.View(), "ask pollington something") {
+		t.Error("full prompt not visible in the rendered frame")
+	}
+}

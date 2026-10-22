@@ -1,64 +1,77 @@
-# pollington
+<h1 align="center">pollington</h1>
 
-A terminal coding agent. Go + Bubble Tea, talking to any OpenAI-compatible API.
+<p align="center">
+  <em>A coding agent that lives in your terminal.</em><br>
+  Go · Bubble Tea · any OpenAI-compatible model
+</p>
 
-> It can read your code, change it, run your build, and check its own work,
-> streaming as it goes. The settings panel is not there yet.
+<p align="center">
+  <a href="https://github.com/ThisLonzoBall/pollington/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/ThisLonzoBall/pollington/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <img alt="Go 1.23+" src="https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white">
+  <img alt="63 tests" src="https://img.shields.io/badge/tests-63-brightgreen">
+  <img alt="no key required to try" src="https://img.shields.io/badge/try%20it-no%20API%20key-blueviolet">
+</p>
 
-## Status
+---
 
-| Piece | State |
-|---|---|
-| OpenAI-compatible client | works, streaming (SSE) |
-| Tool-calling loop | works, 25-step cap |
-| `read_file`, `list_dir` | works |
-| `write_file`, `run_shell` | works, each gated behind a `y/n` prompt |
-| Tests | 62, no API key or network needed |
-| Bubble Tea UI | live stream, scrollback, spinner + elapsed, confirm prompt, token counter |
-| Settings panel (ctrl+s) | TODO |
+Ask it a question. It reads your files, edits them, runs your build, and answers —
+streaming as it goes.
 
-Never yet pointed at a real provider — every test runs against a fake server.
+```
+pollington - ctrl+c to quit
+you why is the spinner test flaky?
+  ⚙ read_file internal/tui/tui_test.go
 
-## Run
+rollVerb draws at random, so two
+consecutive draws can repeat.
+pollington It asserts a different verb each
+⣾  Percolating… 7s
 
-Needs Go 1.23 or newer — a dependency requires it, so the version in Ubuntu 24.04's
-apt (1.22) will not build this. Built and verified against Go 1.27.1.
+> ask pollington something
+in 0  out 0
+```
 
-### Without an API key
+Anything that can change your machine asks first:
 
-There is a scripted fake provider in the repo, so you can see the whole thing
+```
+pollington - ctrl+c to quit
+you fix the deferred unlock in server.go
+  ⚙ read_file server.go
+
+allow write_file?
+  overwrite server.go (1204 bytes, 48 lines)
+  y to allow, n to decline
+```
+
+> Both frames above are real `View()` output, not mock-ups.
+
+## Try it in 30 seconds, without an API key
+
+A scripted fake provider ships with the repo, so you can watch the whole thing
 work — streaming, tool calls, the permission prompt, the token counter — with no
-key, no network and nothing spent:
+key, no network and nothing spent.
 
 ```sh
 go run ./cmd/fakeprovider &
 POLLINGTON_BASE_URL=http://localhost:8711/v1 POLLINGTON_API_KEY=unused go run .
 ```
 
-Then ask it anything. It replies from a fixed script that walks the agent
-through listing the directory, reading the README, and running `go build` —
-which is where the `y/n` prompt appears. It is not a model and does not read
-your question.
+Type anything and press enter. It lists the directory, reads this README, then
+asks permission to run `go build` — press `y`. It is not a model and ignores
+your question; everything else is real.
 
-### With a real provider
+## With a real model
 
 ```sh
 export MINIMAX_API_KEY=sk-...
 go run .
 ```
 
-A new MiniMax account comes with trial credit, far more than a session of
-testing costs. Without a key it exits 1 with a message rather than failing at
-the first request.
-
-## Design
-
-One idea holds the codebase together: **the only provider-specific thing is a
-base URL.** `internal/provider` speaks the OpenAI `/chat/completions` format,
-which MiniMax, Ollama, llama.cpp, vLLM, Groq and OpenRouter all implement. The
-agent loop, the tools and the UI never learn which one is behind it.
-
-Presets live in `internal/config`:
+Needs **Go 1.23 or newer** — a dependency requires it, so Ubuntu 24.04's apt
+version (1.22) will not build this. Developed against Go 1.27.1. Without a key
+it exits 1 with a message rather than failing at the first request.
 
 | Preset | Base URL | Model |
 |---|---|---|
@@ -74,8 +87,9 @@ POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b p
 ```
 
 Model IDs move fast — confirm the current one in your provider's console.
+Settings live at `~/.config/pollington/config.json`, mode `0600`.
 
-### Keys
+## Keys
 
 | Key | Does |
 |---|---|
@@ -87,79 +101,164 @@ Model IDs move fast — confirm the current one in your provider's console.
 Arrow keys are left to the input box deliberately — stealing them for scrolling
 would break cursor movement while typing.
 
-### Five things the code is deliberately careful about
+## How it works
 
-**Reasoning content is kept in history.** MiniMax's models think between tool
-calls and need that trace replayed on later requests. Strip it and the model
-loses the thread mid-task — it will re-read the same file every turn.
-`provider.Message` carries `reasoning_content` and `agent.Send` appends the
-assistant message whole. `TestReasoningSurvivesInHistory` guards it.
+The whole product is one loop. The model cannot touch your disk; it can only
+*ask*, and the loop runs the request and feeds the result back:
 
-**The tool list is sorted and built once.** Go randomizes map iteration order.
-Deriving the tool block from a map per request would reorder the front of the
-prompt every time and miss the provider's prompt cache on every turn — costing
-~8x on input tokens and the prefill latency a cache hit saves, while breaking
-nothing visibly. `TestToolOrderIsStable` guards it.
+```
+  you ──▶ agent ──▶ provider ──▶ ☁ model
+                                   │
+                  ┌────────────────┘
+                  ▼
+          tool call, not an answer
+                  │
+                  ▼
+          run it (ask first, if it writes or executes)
+                  │
+                  ▼
+          append the result to history ──▶ ask again
+                  │
+                  ▼
+          no tool call this time ──▶ that's the answer
+```
 
-**Tool output is capped at 8k, head and tail.** Whatever a tool returns enters
-history permanently and is resent every turn, so an unbounded build log is a
-recurring charge. Truncation keeps both ends, because compilers put the summary
-on the last line, and it cuts on line boundaries so a multi-byte character is
-never split — `encoding/json` would silently corrupt it rather than erroring.
+That loop is about thirty-five lines in `internal/agent/agent.go`. Everything else is
+the care needed to make it behave.
 
-**`write_file` and `run_shell` need permission.** Both set `NeedsConfirm`, and a
-nil confirmation handler denies rather than allows, so non-interactive callers
-fail closed. `safePath` keeps file tools inside the working directory; a shell
-command cannot be sandboxed that way, which is exactly why it asks first.
+## Status
 
-**`run_shell` kills the whole process group.** `exec.CommandContext` only kills
-the shell, and a surviving grandchild holds the output pipe open — so
-`CombinedOutput` blocks past the deadline and the timeout does nothing. Found by
-`TestRunShellTimesOut`, which took 30 seconds before the fix and 0.16 after.
+| Piece | State |
+|---|---|
+| OpenAI-compatible client | streaming (SSE) |
+| Tool-calling loop | 25-step cap |
+| `read_file`, `list_dir` | sandboxed to the working directory |
+| `write_file`, `run_shell` | gated behind a `y/n` prompt |
+| UI | live stream, scrollback, spinner + elapsed, token counter |
+| Tests | 63, no API key or network |
+| Settings panel (`ctrl+s`) | planned |
+| Live cost per provider | planned |
 
-**Reasoning streams live; a split tag never leaks.** Providers deliver
-reasoning either in a `reasoning_content` field or wrapped in `<think>` tags
-inside `content` — and a tag can straddle a frame boundary, arriving as `"<thi"`
-then `"nk>"`. `thinkSplitter` holds back a trailing partial tag until the next
-frame resolves it, while releasing real text immediately: buffering reasoning
-until the closing tag would leave the screen blank through the longest part of
-the turn, which is the exact problem streaming exists to solve.
+**It has never been pointed at a real provider.** Every test, and the demo above,
+runs against a fake server. The first live call is the remaining unknown.
 
-**Tool-call arguments are reassembled by index.** Arguments arrive as JSON
-fragments across many frames, and the follow-up frames carry neither `id` nor
-`name` — only the index ties them to the call they belong to.
+## Design notes
 
-**Errors name the URL they used.** `api.minimax.io` (global) and
-`api.minimaxi.com` (China) are separate platforms with separate keys, and the
-wrong pairing returns a generic auth failure. Printing the URL turns that into
-a five-second fix.
+One idea holds the codebase together: **the only provider-specific thing is a
+base URL.** `internal/provider` speaks the OpenAI `/chat/completions` format,
+which MiniMax, DeepSeek, Groq, OpenRouter, Ollama, llama.cpp and vLLM all
+implement. The agent loop, the tools and the UI never learn which is behind it.
+
+<details>
+<summary><strong>Reasoning content is kept in history</strong> — drop it and the model loops</summary>
+
+The API is stateless: the model's entire memory is the `messages` array you
+send. A tool call records *what* it did — `read_file{"path":"tui.go"}` — but
+nothing about *why*. The intent lived only in the reasoning trace.
+
+Strip it and the next turn re-derives a plan from the evidence alone, often a
+different one. The symptoms are re-reading a file it already read, abandoning a
+half-finished edit, or contradicting a decision two turns old.
+
+`provider.Message` carries `reasoning_content`, and `agent.Send` appends the
+assistant message *whole* before running its tool calls.
+`TestReasoningSurvivesInHistory` asserts it reaches the wire, not just memory.
+</details>
+
+<details>
+<summary><strong>The tool list is sorted and built once</strong> — or the prompt cache misses every turn</summary>
+
+Go randomizes map iteration order. Deriving the tool block from a map per
+request reorders the front of the prompt every time, missing the provider's
+prompt cache on every turn — roughly 8x on input tokens plus the prefill a cache
+hit would skip, while breaking nothing visibly. `TestToolOrderIsStable` guards it.
+</details>
+
+<details>
+<summary><strong>Reasoning streams live, and a split tag never leaks</strong></summary>
+
+Providers deliver reasoning either in a `reasoning_content` field or wrapped in
+`<think>` tags inside `content` — and a tag can straddle a frame boundary,
+arriving as `"<thi"` then `"nk>"`. `thinkSplitter` holds back a trailing partial
+tag until the next frame resolves it, while releasing real text immediately:
+buffering reasoning until the closing tag would leave the screen blank through
+the longest part of the turn, which is the problem streaming exists to solve.
+</details>
+
+<details>
+<summary><strong>Tool-call arguments are reassembled by index</strong></summary>
+
+Arguments arrive as JSON fragments across many frames, and the follow-up frames
+carry neither `id` nor `name` — only the index ties them to the call they belong
+to. They are accumulated by index, then sorted, and the result may still be
+malformed, so every parse is checked.
+</details>
+
+<details>
+<summary><strong>Tool output is capped at 8k, head and tail</strong></summary>
+
+Whatever a tool returns enters history permanently and is resent every turn, so
+an unbounded build log is a recurring charge. Truncation keeps *both* ends,
+because compilers put the summary on the last line, and cuts on line boundaries
+so a multi-byte character is never split — `encoding/json` would silently
+corrupt it rather than erroring.
+</details>
+
+<details>
+<summary><strong><code>run_shell</code> kills the whole process group</strong></summary>
+
+`exec.CommandContext` kills only the shell. `sh -c "sleep 30"` forks, and the
+grandchild inherits the output pipe — so `CombinedOutput` blocks past the
+deadline and the timeout does nothing. Found by `TestRunShellTimesOut`, which
+took 30 seconds before the fix and 0.16 after.
+</details>
+
+<details>
+<summary><strong>Errors name the URL they used</strong></summary>
+
+`api.minimax.io` (global) and `api.minimaxi.com` (mainland China) are separate
+platforms with separate keys, and the wrong pairing returns a generic auth
+failure. Printing the URL turns a twenty-minute hunt into a five-second fix.
+</details>
 
 ## Tests
 
 ```sh
-go test ./...          # 62 tests, no API key, no network, no cost
+go test ./...          # 63 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 
-Every test runs against an `httptest` server that replays canned model
-responses, so the loop, the reasoning-retention rule, the cache ordering, the
-permission gate and the SSE parser are all verified offline.
+Everything runs against an `httptest` server replaying canned model responses,
+so the loop, the reasoning-retention rule, the cache ordering, the permission
+gate and the SSE parser are all verified offline.
 
-One test deserves a mention: `TestEventsArriveDuringTheTurn` has the fake
-server write one frame, flush, then **block** until the agent has surfaced it.
-If the client buffered the response instead of streaming it, that deadlocks.
-A buffering bug is invisible in every other test, because the final answer is
-identical either way.
+One test earns a mention. **`TestEventsArriveDuringTheTurn`** has the fake server
+write one frame, flush, then *block* until the agent has surfaced it. If the
+client buffered the response instead of streaming it, that deadlocks. A
+buffering bug is invisible in every other test, because the final answer is
+byte-identical either way.
+
+The suite is checked by mutation rather than by trusting green ticks —
+re-introducing each fixed bug in a scratch copy and confirming the relevant test
+fails. That is how the `run_shell` timeout bug was found in the first place.
 
 ## Layout
 
 ```
 main.go                       wiring
-internal/config/              settings, presets, ~/.config/pollington/config.json
-internal/provider/            OpenAI-compatible client, SSE parsing, <think> splitting
-internal/agent/agent.go       the tool-calling loop, truncation, the confirm gate
+internal/config/              settings, presets, env overrides
+internal/provider/            OpenAI-compatible client, SSE, <think> splitting
+internal/agent/agent.go       the loop, truncation, the permission gate
 internal/agent/tools.go       read_file, list_dir, write_file, run_shell
-internal/agent/shell_unix.go  process-group kill (and shell_other.go elsewhere)
+internal/agent/shell_unix.go  process-group kill (shell_other.go elsewhere)
 internal/tui/                 Bubble Tea front end
 cmd/fakeprovider/             scripted endpoint for running without a key
 ```
+
+## Why it exists
+
+Terminal coding agents are a crowded field — Claude Code, Cline, Aider, and
+MiniMax's own MiniMax Code all exist and are better. This one is built to
+understand the machinery: how a tool-calling loop actually works, why a thinking
+model's trace has to be replayed, where the tokens really go, and what breaks
+when a stream is parsed carelessly. Those turn out to be the interesting parts.

@@ -185,6 +185,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.vp.SetContent(strings.Join(m.lines, "\n"))
 		m.vp.GotoBottom()
+
+		// textinput truncates its placeholder to a single character while Width
+		// is 0, so an unsized input shows "> a" instead of the prompt text.
+		if w := msg.Width - 4; w > 0 {
+			m.input.Width = w
+		}
 		return m, nil
 
 	case confirmReq:
