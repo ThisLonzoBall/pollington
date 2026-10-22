@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -437,5 +438,140 @@ func TestSizedInputShowsFullPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "ask pollington something") {
 		t.Error("full prompt not visible in the rendered frame")
+	}
+}
+
+// quits reports whether a command resolves to tea's quit message.
+func quits(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
+func TestCtrlCQuits(t *testing.T) {
+	m := sized(t, 80, 24)
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); !quits(cmd) {
+		t.Error("ctrl+c must still quit")
+	}
+}
+
+// TestEscNeverQuits is the point of the feature: losing a whole conversation to
+// a stray keypress is worse than having a second quit key.
+func TestEscNeverQuits(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	// Idle.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if quits(cmd) {
+		t.Error("esc quit while idle")
+	}
+	m = next.(Model)
+
+	// Mid-turn.
+	m.working = true
+	m.cancel = func() {}
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); quits(cmd) {
+		t.Error("esc quit while working")
+	}
+}
+
+func TestEscCancelsTheTurnInFlight(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	var cancelled bool
+	m.working = true
+	m.cancel = func() { cancelled = true }
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+
+	if !cancelled {
+		t.Fatal("esc did not cancel the in-flight turn")
+	}
+}
+
+func TestEscWhileIdleDoesNotCancel(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	var cancelled bool
+	m.working = false
+	m.cancel = func() { cancelled = true }
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_ = next
+	if cancelled {
+		t.Error("esc cancelled a stale context while idle")
+	}
+}
+
+// TestCancelledTurnReadsAsStoppedNotFailed: the user asked for it, so it should
+// not look like a crash.
+func TestCancelledTurnReadsAsStoppedNotFailed(t *testing.T) {
+	m := sized(t, 80, 24)
+	m.working = true
+	m.answer = "half an answer"
+	m.cancel = func() {}
+
+	next, _ := m.Update(replyMsg{err: context.Canceled})
+	m = next.(Model)
+
+	view := m.View()
+	if strings.Contains(view, "error") || strings.Contains(view, "context canceled") {
+		t.Errorf("a cancellation should not read as an error:\n%s", view)
+	}
+	if !strings.Contains(view, "stopped") {
+		t.Errorf("no indication the turn was stopped:\n%s", view)
+	}
+	if m.working {
+		t.Error("still marked as working after the turn ended")
+	}
+}
+
+// TestTurnEndReleasesTheContext guards a leak: a cancel func left uncalled
+// holds the context alive for the life of the process.
+func TestTurnEndReleasesTheContext(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	var released bool
+	m.working = true
+	m.cancel = func() { released = true }
+
+	next, _ := m.Update(replyMsg{text: "done"})
+	m = next.(Model)
+
+	if !released {
+		t.Error("the turn's context was never released")
+	}
+	if m.cancel != nil {
+		t.Error("cancel should be cleared once the turn is over")
+	}
+}
+
+// TestEscAtAPromptStillDeclines: the confirmation prompt owns esc while it is
+// up, which is the existing contract.
+func TestEscAtAPromptDoesNotAlsoCancel(t *testing.T) {
+	m, a := newTestModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(Model)
+
+	var cancelled bool
+	m.working = true
+	m.cancel = func() { cancelled = true }
+
+	answer := make(chan bool, 1)
+	go func() { answer <- a.Confirm("run_shell", "rm -rf /") }()
+	next, _ = m.Update(waitForConfirm(m.confirmCh)())
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+
+	if got := <-answer; got {
+		t.Error("esc at a prompt must decline")
+	}
+	if cancelled {
+		t.Error("esc at a prompt declined the tool; it should not also kill the turn")
 	}
 }
