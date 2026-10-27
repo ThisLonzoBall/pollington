@@ -31,6 +31,12 @@ type Config struct {
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
 	Model   string `json:"model"`
+
+	// InputPrice and OutputPrice are dollars per million tokens, and override
+	// the built-in rate table in pricing.go. Set them for a model that is not
+	// listed there, or when its published rate has changed.
+	InputPrice  float64 `json:"input_price,omitempty"`
+	OutputPrice float64 `json:"output_price,omitempty"`
 }
 
 // Path returns ~/.config/pollington/config.json.

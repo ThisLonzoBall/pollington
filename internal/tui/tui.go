@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ThisLonzoBall/pollington/internal/agent"
+	"github.com/ThisLonzoBall/pollington/internal/config"
 )
 
 // chromeHeight is the number of rows View reserves below the transcript: the
@@ -96,6 +97,10 @@ type Model struct {
 	cancel context.CancelFunc
 
 	root string // the project the agent is anchored to, shown in the header
+
+	// price is the model's published rate. Zero for a model with no known
+	// rate, in which case the status bar shows tokens only.
+	price config.Pricing
 }
 
 // shortenHome swaps the home directory for ~ so the header stays readable in a
@@ -121,7 +126,7 @@ func (m *Model) push(line string) {
 	}
 }
 
-func New(a *agent.Agent, root string) Model {
+func New(a *agent.Agent, root string, price config.Pricing) Model {
 	ti := textinput.New()
 	ti.Placeholder = "ask pollington something"
 	ti.Focus()
@@ -152,6 +157,7 @@ func New(a *agent.Agent, root string) Model {
 		confirmCh: ch,
 		eventCh:   ev,
 		root:      root,
+		price:     price,
 		lines: []string{statusStyle.Render(
 			"pollington  " + shortenHome(root) + "  esc stops a turn, ctrl+c quits")},
 	}
@@ -407,8 +413,29 @@ func (m Model) View() string {
 	b.WriteString("\n" + m.input.View() + "\n")
 
 	u := m.agent.Usage
-	b.WriteString(statusStyle.Render(fmt.Sprintf("in %d  out %d", u.PromptTokens, u.CompletionTokens)))
+	status := fmt.Sprintf("in %d  out %d", u.PromptTokens, u.CompletionTokens)
+	// Cost is invisible until it is on screen, and an agent that reads files
+	// into its context spends faster than it feels like it does. Only shown for
+	// a model with a known rate - see pricing.go for why there is no guess.
+	if m.price.Known() {
+		status += "  " + formatCost(m.price.Cost(u.PromptTokens, u.CompletionTokens))
+	}
+	b.WriteString(statusStyle.Render(status))
 	return b.String()
+}
+
+// formatCost renders a running total. A turn costs a fraction of a cent, so two
+// decimal places would read "$0.00" for most of a session; four says something.
+// The tilde is doing real work: the figure is an upper bound, because cached
+// input is billed at a fraction of the rate used here.
+func formatCost(d float64) string {
+	switch {
+	case d >= 1:
+		return fmt.Sprintf("~$%.2f", d)
+	case d > 0 && d < 0.0001:
+		return "<$0.0001"
+	}
+	return fmt.Sprintf("~$%.4f", d)
 }
 
 // thinkTailLines is how much of the reasoning stream stays on screen.
