@@ -39,13 +39,18 @@ var verbs = []string{
 }
 
 // verbInterval is slow on purpose. Faster than about 3s reads as flicker rather
-// than deliberate personality.
-const verbInterval = 4 * time.Second
+// than deliberate personality. A var rather than a const so a test can watch a
+// real tick arrive without waiting four seconds for it.
+var verbInterval = 4 * time.Second
 
-type verbMsg struct{}
+// verbMsg carries the turn that scheduled it. Without that, a tick left over
+// from a finished turn arrives during the *next* one, finds working true,
+// reschedules itself, and from then on two chains rotate the verb in parallel -
+// at twice the rate, and three chains after another quick turn.
+type verbMsg struct{ turn int }
 
-func nextVerb() tea.Cmd {
-	return tea.Tick(verbInterval, func(time.Time) tea.Msg { return verbMsg{} })
+func nextVerb(turn int) tea.Cmd {
+	return tea.Tick(verbInterval, func(time.Time) tea.Msg { return verbMsg{turn: turn} })
 }
 
 var (
@@ -94,6 +99,10 @@ type Model struct {
 
 	// cancel stops the turn currently in flight. Non-nil only while working.
 	cancel context.CancelFunc
+
+	// turn counts turns started, and is the generation tag on verb ticks: a
+	// tick from an older turn is ignored instead of starting a second chain.
+	turn int
 
 	root string // the project the agent is anchored to, shown in the header
 }
@@ -179,13 +188,23 @@ func waitForEvent(ch chan agent.Event) tea.Cmd {
 	return func() tea.Msg { return <-ch }
 }
 
+// Init deliberately does not start the spinner. Both animations are timer
+// chains, and a chain that is running is re-rendering the whole UI - 10 times a
+// second for the spinner. Nothing is animated while idle, so nothing should be
+// ticking; animate() starts both when a turn does. The only repeating timer
+// left on an idle UI is the text cursor's blink, which is the point of a cursor.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
-		m.spin.Tick,
 		waitForConfirm(m.confirmCh),
 		waitForEvent(m.eventCh),
 	)
+}
+
+// animate starts this turn's two timer chains: the spinner's frames, and the
+// slower verb rotation.
+func (m Model) animate() tea.Cmd {
+	return tea.Batch(m.spin.Tick, nextVerb(m.turn))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -237,16 +256,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.eventCh)
 
 	case spinner.TickMsg:
+		// spinner.Update reschedules unconditionally, so dropping the command
+		// here is what actually stops the chain. The spinner is only drawn
+		// while working, and an animation nobody can see is pure wakeups.
+		if !m.working {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 
 	case verbMsg:
-		if !m.working {
-			return m, nil // stop rotating once the turn is over
+		if !m.working || msg.turn != m.turn {
+			return m, nil // the turn is over, or this tick belongs to an older one
 		}
 		m.verb = m.rollVerb()
-		return m, nextVerb()
+		return m, nextVerb(m.turn)
 
 	case tea.KeyMsg:
 		// A pending confirmation swallows all input until it is answered,
@@ -283,6 +308,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.input.Reset()
 			m.push(userStyle.Render("you ") + text)
+			m.turn++
 			m.working = true
 			m.started = time.Now()
 			m.verb = m.rollVerb()
@@ -290,7 +316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancel = cancel
-			return m, tea.Batch(m.ask(ctx, text), nextVerb())
+			return m, tea.Batch(m.ask(ctx, text), m.animate())
 		}
 
 	case replyMsg:

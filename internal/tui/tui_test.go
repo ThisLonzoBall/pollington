@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ThisLonzoBall/pollington/internal/agent"
@@ -182,13 +183,152 @@ func TestVerbRotationStopsWhenIdle(t *testing.T) {
 	m, _ := newTestModel(t)
 
 	m.working = false
-	if _, cmd := m.Update(verbMsg{}); cmd != nil {
+	if _, cmd := m.Update(verbMsg{turn: m.turn}); cmd != nil {
 		t.Error("should not keep scheduling verb ticks once the turn is over")
 	}
 
 	m.working = true
-	if _, cmd := m.Update(verbMsg{}); cmd == nil {
+	if _, cmd := m.Update(verbMsg{turn: m.turn}); cmd == nil {
 		t.Error("should keep rotating while working")
+	}
+}
+
+// submit starts a turn the way Enter does, without reaching the provider.
+func submit(t *testing.T, m Model, text string) Model {
+	t.Helper()
+	m.input.SetValue(text)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return next.(Model)
+}
+
+// TestStaleVerbTickDoesNotStartASecondRotation is the stacking bug. A turn that
+// finishes inside the 4s window leaves its tick in flight; if the next turn
+// starts before it lands, that tick finds working true, reschedules itself, and
+// the verb rotates at twice the rate for the rest of the session.
+func TestStaleVerbTickDoesNotStartASecondRotation(t *testing.T) {
+	m := sized(t, 80, 24)
+
+	m = submit(t, m, "first")
+	stale := m.turn
+
+	// Turn one ends well inside its own tick window, and turn two starts.
+	next, _ := m.Update(replyMsg{text: "done"})
+	m = next.(Model)
+	m = submit(t, m, "second")
+
+	if m.turn == stale {
+		t.Fatal("a new turn must get a new generation, or stale ticks are indistinguishable")
+	}
+	if _, cmd := m.Update(verbMsg{turn: stale}); cmd != nil {
+		t.Error("a tick from a finished turn rescheduled itself - two chains now rotate the verb")
+	}
+	// The live chain is untouched.
+	if _, cmd := m.Update(verbMsg{turn: m.turn}); cmd == nil {
+		t.Error("the current turn stopped rotating")
+	}
+}
+
+// TestSpinnerDoesNotTickWhileIdle: spinner.Update reschedules unconditionally,
+// so an unguarded TickMsg case re-renders an idle UI 10 times a second forever.
+func TestSpinnerDoesNotTickWhileIdle(t *testing.T) {
+	m, _ := newTestModel(t)
+
+	tick, ok := m.spin.Tick().(spinner.TickMsg)
+	if !ok {
+		t.Fatalf("spinner.Tick returned %T", m.spin.Tick())
+	}
+
+	m.working = false
+	if _, cmd := m.Update(tick); cmd != nil {
+		t.Error("the spinner kept its timer running on an idle UI")
+	}
+
+	m.working = true
+	if _, cmd := m.Update(tick); cmd == nil {
+		t.Error("the spinner stopped animating during a turn")
+	}
+}
+
+// TestLaunchStartsNoAnimationTimers pins the claim down at the other end: a
+// freshly launched UI is not animating anything, so it should schedule nothing.
+func TestLaunchStartsNoAnimationTimers(t *testing.T) {
+	m, _ := newTestModel(t)
+
+	for _, msg := range drain(t, m.Init()) {
+		switch msg.(type) {
+		case spinner.TickMsg, verbMsg:
+			t.Errorf("Init scheduled %T on an idle UI", msg)
+		}
+	}
+}
+
+// TestSubmitStartsBothAnimations guards the other direction: without the
+// spinner chain the elapsed-seconds counter freezes, which is the whole reason
+// it exists.
+func TestSubmitStartsBothAnimations(t *testing.T) {
+	m := sized(t, 80, 24)
+	m.turn = 7
+
+	old := verbInterval
+	verbInterval = 10 * time.Millisecond
+	t.Cleanup(func() { verbInterval = old })
+
+	var spun, rotated bool
+	for _, msg := range drain(t, m.animate()) {
+		switch msg := msg.(type) {
+		case spinner.TickMsg:
+			spun = true
+		case verbMsg:
+			rotated = true
+			if msg.turn != m.turn {
+				t.Errorf("verb tick tagged turn %d, want %d", msg.turn, m.turn)
+			}
+		}
+	}
+	if !spun {
+		t.Error("no spinner tick - the frames and the elapsed counter would both freeze")
+	}
+	if !rotated {
+		t.Error("no verb tick - the rotation would never start")
+	}
+}
+
+// drain runs a command, flattening tea.Batch, and collects the messages that
+// arrive within a short window. Timer commands sleep, so each is run on its own
+// goroutine rather than serially.
+func drain(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	out := make(chan tea.Msg, 16)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		go func() {
+			switch msg := c().(type) {
+			case tea.BatchMsg:
+				for _, sub := range msg {
+					run(sub)
+				}
+			case tea.Msg:
+				out <- msg
+			}
+		}()
+	}
+	run(cmd)
+
+	var msgs []tea.Msg
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case msg := <-out:
+			msgs = append(msgs, msg)
+		case <-deadline:
+			return msgs
+		}
 	}
 }
 
