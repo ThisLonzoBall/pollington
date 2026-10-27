@@ -36,7 +36,7 @@ func main() {
 	client := provider.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
 	a := agent.New(client, agent.DefaultTools(root))
 
-	if _, err := tea.NewProgram(tui.New(a, root), tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(tui.New(a, root, cfg.Price()), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "pollington:", err)
 		os.Exit(1)
 	}

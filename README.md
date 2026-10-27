@@ -10,7 +10,7 @@
     <img alt="CI" src="https://github.com/ThisLonzoBall/pollington/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Go 1.23+" src="https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white">
-  <img alt="82 tests" src="https://img.shields.io/badge/tests-82-brightgreen">
+  <img alt="90 tests" src="https://img.shields.io/badge/tests-90-brightgreen">
   <img alt="no key required to try" src="https://img.shields.io/badge/try%20it-no%20API%20key-blueviolet">
 </p>
 
@@ -30,7 +30,7 @@ pollington It asserts a different verb each
 ⣾  Percolating… 7s
 
 > ask pollington something
-in 0  out 0
+in 14310  out 2188  ~$0.0059
 ```
 
 Anything that can change your machine asks first:
@@ -114,7 +114,21 @@ POLLINGTON_BASE_URL=http://localhost:11434/v1 POLLINGTON_MODEL=qwen3-coder:30b p
 ```
 
 Model IDs move fast — confirm the current one in your provider's console.
-Settings live at `~/.config/pollington/config.json`, mode `0600`.
+Settings live at `~/.config/pollington/config.json`, mode `0600`:
+
+```json
+{
+  "base_url": "https://api.minimax.io/v1",
+  "api_key": "sk-...",
+  "model": "MiniMax-M2.7",
+  "input_price": 0.255,
+  "output_price": 1.02
+}
+```
+
+`input_price` and `output_price` are dollars per million tokens and drive the
+cost readout in the status bar. Both are optional: known models have a built-in
+rate, and a model with no rate simply shows no cost.
 
 ## Keys
 
@@ -170,10 +184,10 @@ the care needed to make it behave.
 | `write_file`, `run_shell` | gated behind a `y/n` prompt |
 | Cancel a turn | `esc`, leaving history intact and valid |
 | Project root | found by walking up for `.git`; pins the sandbox |
-| UI | live stream, scrollback, spinner + elapsed, token counter |
-| Tests | 82, no API key or network |
+| UI | live stream, scrollback, spinner + elapsed, tokens + running cost |
+| Cost estimate | shown when the model's rate is known |
+| Tests | 90, no API key or network |
 | Settings panel (`ctrl+s`) | planned |
-| Live cost per provider | planned |
 
 **It has never been pointed at a real provider.** Every test, and the demo above,
 runs against a fake server. The first live call is the remaining unknown.
@@ -208,6 +222,26 @@ Go randomizes map iteration order. Deriving the tool block from a map per
 request reorders the front of the prompt every time, missing the provider's
 prompt cache on every turn — roughly 8x on input tokens plus the prefill a cache
 hit would skip, while breaking nothing visibly. `TestToolOrderIsStable` guards it.
+</details>
+
+<details>
+<summary><strong>The cost in the status bar is an upper bound, and blank when unknown</strong></summary>
+
+`~$0.0059` beside the token counts answers the question people actually have.
+Two details make it honest.
+
+It is an **upper** bound: cached input is billed at a fraction of fresh input
+($0.03/M against $0.255 on MiniMax) and a long session hits that cache on nearly
+every turn, so the real invoice is lower. Reasoning tokens, meanwhile, are billed
+as output and are already inside the count the provider reports — which is why a
+thinking model costs several times what the length of its answer suggests.
+
+And a model with no known rate shows **no figure at all**. Published rates move,
+and the current price of some models is reported four different ways by four
+aggregators. A wrong number on screen gets believed, which defeats the purpose of
+putting it there. Set `input_price` and `output_price` (dollars per million
+tokens) in `config.json` for anything missing, and the override beats the
+built-in table.
 </details>
 
 <details>
@@ -278,7 +312,7 @@ failure. Printing the URL turns a twenty-minute hunt into a five-second fix.
 ## Tests
 
 ```sh
-go test ./...          # 82 tests, no API key, no network, no cost
+go test ./...          # 90 tests, no API key, no network, no cost
 go test -race ./...    # the confirm prompt crosses goroutines
 ```
 

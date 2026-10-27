@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ThisLonzoBall/pollington/internal/agent"
+	"github.com/ThisLonzoBall/pollington/internal/config"
 	"github.com/ThisLonzoBall/pollington/internal/provider"
 )
 
@@ -20,8 +21,8 @@ import (
 func newTestModel(t *testing.T) (Model, *agent.Agent) {
 	t.Helper()
 	root := t.TempDir()
-	a := agent.New(provider.New("http://unused", "k", "m"), agent.DefaultTools(root))
-	return New(a, root), a
+	a := agent.New(provider.New("http://unused", "k", "MiniMax-M2.7"), agent.DefaultTools(root))
+	return New(a, root, config.PriceFor("MiniMax-M2.7")), a
 }
 
 func key(s string) tea.KeyMsg {
@@ -604,5 +605,52 @@ func TestShortenHome(t *testing.T) {
 	}
 	if got := shortenHome("/opt/elsewhere"); got != "/opt/elsewhere" {
 		t.Errorf("paths outside home should be untouched: %q", got)
+	}
+}
+
+// TestStatusBarShowsRunningCost: the token counts alone do not answer the
+// question people actually have, which is what this session is costing.
+func TestStatusBarShowsRunningCost(t *testing.T) {
+	m, a := newTestModel(t)
+	a.Usage = provider.Usage{PromptTokens: 100_000, CompletionTokens: 20_000}
+
+	view := m.View()
+	if !strings.Contains(view, "in 100000") || !strings.Contains(view, "out 20000") {
+		t.Errorf("token counts missing:\n%s", view)
+	}
+	// 100k at $0.255/M plus 20k at $1.02/M = $0.0459.
+	if !strings.Contains(view, "$0.0459") {
+		t.Errorf("no cost estimate in the status bar:\n%s", view)
+	}
+}
+
+// TestUnknownModelShowsNoCost is the honesty half of the feature: with no rate
+// for the model, a plausible-looking number is worse than nothing.
+func TestUnknownModelShowsNoCost(t *testing.T) {
+	root := t.TempDir()
+	a := agent.New(provider.New("http://unused", "k", "mystery-model"), agent.DefaultTools(root))
+	a.Usage = provider.Usage{PromptTokens: 100_000, CompletionTokens: 20_000}
+	m := New(a, root, config.PriceFor("mystery-model"))
+
+	if view := m.View(); strings.Contains(view, "$") {
+		t.Errorf("a cost was shown for a model with no known rate:\n%s", view)
+	}
+}
+
+func TestFormatCost(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{0, "~$0.0000"},
+		{0.0459, "~$0.0459"},
+		// Four decimals would round a real, if tiny, spend down to zero.
+		{0.00002, "<$0.0001"},
+		// Past a dollar the fourth decimal is noise.
+		{12.3456, "~$12.35"},
+	} {
+		if got := formatCost(tc.in); got != tc.want {
+			t.Errorf("formatCost(%v) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
