@@ -250,3 +250,60 @@ func TestListDirMarksDirectories(t *testing.T) {
 		t.Errorf("missing file: %q", out)
 	}
 }
+
+// TestSymlinkOutOfTheRootIsRejected is the hole a textual containment check
+// leaves: "link/secret.txt" has no ".." in it and reads as a path under the
+// root, so without resolving links first it sails through.
+func TestSymlinkOutOfTheRootIsRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs privileges on windows")
+	}
+	root := sandbox(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("stolen"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := run(t, readFile(root), `{"path":"link/secret.txt"}`); err == nil {
+		t.Errorf("read outside the root through a symlink: %q", out)
+	}
+	if _, err := run(t, listDir(root), `{"path":"link"}`); err == nil {
+		t.Error("listed a directory outside the root through a symlink")
+	}
+	if _, err := run(t, writeFile(root), `{"path":"link/planted.txt","content":"x"}`); err == nil {
+		t.Error("write outside the root through a symlink was accepted")
+	}
+	// The refusal has to be the file never appearing, not just an error string.
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Error("the file was written outside the project root")
+	}
+}
+
+// TestSymlinkInsideTheRootStillWorks guards the other direction: resolving
+// links must not start refusing the ordinary reason repositories contain them.
+func TestSymlinkInsideTheRootStillWorks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs privileges on windows")
+	}
+	root := sandbox(t)
+	if err := os.Mkdir(filepath.Join(root, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "real", "f.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, readFile(root), `{"path":"alias/f.txt"}`)
+	if err != nil {
+		t.Fatalf("a symlink within the root should still resolve: %v", err)
+	}
+	if out != "ok" {
+		t.Errorf("contents = %q, want ok", out)
+	}
+}

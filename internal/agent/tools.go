@@ -238,14 +238,56 @@ func runShell(root string) Tool {
 
 // safePath keeps the model inside the project root. A model that has talked
 // itself into reading ~/.ssh/id_rsa is not a hypothetical.
+//
+// The comparison is textual, which is why symlinks have to be resolved first:
+// "link/id_rsa" contains no ".." and sits under the root by spelling, so a link
+// inside the repo pointing anywhere on the filesystem would otherwise walk
+// straight through this check. Symlinks into a repo are ordinary - vendored
+// directories, shared config, a checkout under a symlinked path - so this is a
+// hole that opens without anyone doing anything suspicious.
 func safePath(root, p string) (string, error) {
 	abs, err := filepath.Abs(filepath.Join(root, p))
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(root, abs)
+	// The root is resolved too: on a machine where it is reached through a link
+	// (/tmp on macOS being /private/tmp, for one) every legitimate path would
+	// otherwise fail the comparison.
+	realRoot, err := resolveSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	real, err := resolveSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(realRoot, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q is outside the project root", p)
 	}
-	return abs, nil
+	return real, nil
+}
+
+// resolveSymlinks is filepath.EvalSymlinks for a path that need not exist yet.
+// write_file creates files, so the leaf is usually missing and EvalSymlinks
+// fails outright; the deepest existing ancestor is resolved instead and the
+// remainder re-attached. That is enough, because only an existing component
+// can be a link.
+func resolveSymlinks(p string) (string, error) {
+	var rest string
+	for {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return filepath.Join(p, rest), nil // reached the filesystem root
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
