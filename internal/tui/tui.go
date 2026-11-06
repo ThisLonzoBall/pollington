@@ -17,6 +17,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ThisLonzoBall/pollington/internal/agent"
+	"github.com/ThisLonzoBall/pollington/internal/config"
+	"github.com/ThisLonzoBall/pollington/internal/provider"
 )
 
 // chromeHeight is the number of rows View reserves below the transcript: the
@@ -96,6 +98,99 @@ type Model struct {
 	cancel context.CancelFunc
 
 	root string // the project the agent is anchored to, shown in the header
+
+	// The ctrl+s provider panel. While open it owns the keyboard.
+	panel bool
+	sel   int // highlighted row, an index into config.PresetNames
+}
+
+// activePreset names the preset the agent is currently using, or "" when it was
+// pointed somewhere else by POLLINGTON_BASE_URL or the config file.
+func (m Model) activePreset() string {
+	for _, n := range config.PresetNames {
+		if config.Presets[n].BaseURL == m.agent.BaseURL() {
+			return n
+		}
+	}
+	return ""
+}
+
+// openPanel shows the provider list with the current provider highlighted.
+func (m *Model) openPanel() {
+	m.panel, m.sel = true, 0
+	for i, n := range config.PresetNames {
+		if n == m.activePreset() {
+			m.sel = i
+		}
+	}
+}
+
+// panelKey handles input while the provider panel is open.
+func (m Model) panelKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "ctrl+s":
+		m.panel = false
+	case "up", "k":
+		if m.sel > 0 {
+			m.sel--
+		}
+	case "down", "j":
+		if m.sel < len(config.PresetNames)-1 {
+			m.sel++
+		}
+	case "enter":
+		name := config.PresetNames[m.sel]
+		m.panel = false
+		if name == m.activePreset() {
+			return m, nil
+		}
+		cfg, ok := config.ForPreset(name)
+		if !ok {
+			m.push(errorStyle.Render("no key ") + statusStyle.Render(
+				"set "+config.KeyEnv[name]+" to switch to "+name))
+			return m, nil
+		}
+		m.agent.SetClient(provider.New(cfg.BaseURL, cfg.APIKey, cfg.Model))
+		m.push(statusStyle.Render("  switched to " + name + " (" + cfg.Model + ")"))
+	}
+	return m, nil
+}
+
+// panelView lists each preset with its price, one keystroke from selecting it.
+func (m Model) panelView() string {
+	var b strings.Builder
+	b.WriteString("\n" + confirmStyle.Render("provider") +
+		statusStyle.Render("   $ per million tokens") + "\n")
+	b.WriteString(statusStyle.Render(fmt.Sprintf("    %-9s %-22s %7s %7s", "", "model", "in", "out")) + "\n")
+	active := m.activePreset()
+	for i, n := range config.PresetNames {
+		cursor, mark := "  ", " "
+		if i == m.sel {
+			cursor = "> "
+		}
+		if n == active {
+			mark = "●"
+		}
+		p := config.Presets[n]
+		price := config.Prices[n]
+		in, out := fmt.Sprintf("%7.2f", price.Input), fmt.Sprintf("%7.2f", price.Output)
+		if price == (config.Price{}) {
+			in, out = "   free", "   free"
+		}
+		note := ""
+		if _, ok := config.ForPreset(n); !ok {
+			note = "  no " + config.KeyEnv[n]
+		}
+		line := fmt.Sprintf("%s%s %-9s %-22s %s %s%s", cursor, mark, n, p.Model, in, out, note)
+		if i == m.sel {
+			line = confirmStyle.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString(statusStyle.Render("  ↑/↓ choose, enter switch, esc close") + "\n")
+	return b.String()
 }
 
 // shortenHome swaps the home directory for ~ so the header stays readable in a
@@ -153,7 +248,7 @@ func New(a *agent.Agent, root string) Model {
 		eventCh:   ev,
 		root:      root,
 		lines: []string{statusStyle.Render(
-			"pollington  " + shortenHome(root) + "  esc stops a turn, ctrl+c quits")},
+			"pollington  " + shortenHome(root) + "  esc stops a turn, ctrl+s switches provider, ctrl+c quits")},
 	}
 }
 
@@ -254,6 +349,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// agent sits blocked waiting for an answer.
 		if m.pending != nil {
 			return m.answerConfirm(msg)
+		}
+		if m.panel {
+			return m.panelKey(msg)
+		}
+		// Switching mid-turn would change provider under a request in flight.
+		if msg.Type == tea.KeyCtrlS && !m.working {
+			m.openPanel()
+			return m, nil
 		}
 		// Scrolling keys belong to the transcript, not the text box. Routed
 		// explicitly rather than by handing every key to the viewport, which
@@ -402,6 +505,11 @@ func (m Model) View() string {
 			m.verb,
 			statusStyle.Render(time.Since(m.started).Truncate(time.Second).String()),
 		))
+	}
+
+	if m.panel {
+		b.WriteString(m.panelView())
+		return b.String()
 	}
 
 	b.WriteString("\n" + m.input.View() + "\n")

@@ -27,6 +27,50 @@ var Presets = map[string]Config{
 	"ollama":   {BaseURL: "http://localhost:11434/v1", Model: "qwen3-coder:30b", APIKey: "ollama"},
 }
 
+// Price is USD per million tokens.
+type Price struct {
+	Input, Output float64
+}
+
+// PresetNames fixes the order the settings panel lists providers in; a map
+// iterates randomly, which would shuffle the rows on every open.
+var PresetNames = []string{"minimax", "deepseek", "groq", "ollama"}
+
+// Prices are first-party list prices as last checked in Nov 2026 (cache-miss
+// input). They drift - treat them as a comparison aid, not a bill. DeepSeek's
+// figure is the least certain: V4 tiers may have repriced deepseek-chat. A local
+// Ollama model costs nothing per token, hence zero.
+var Prices = map[string]Price{
+	"minimax":  {Input: 0.30, Output: 1.20},
+	"deepseek": {Input: 0.14, Output: 0.28},
+	"groq":     {Input: 0.15, Output: 0.60},
+	"ollama":   {},
+}
+
+// KeyEnv is the provider-specific variable holding that preset's API key, so
+// switching in the panel can find a key without the user exporting a new one.
+var KeyEnv = map[string]string{
+	"minimax":  "MINIMAX_API_KEY",
+	"deepseek": "DEEPSEEK_API_KEY",
+	"groq":     "GROQ_API_KEY",
+}
+
+// ForPreset resolves a preset into a usable Config. The key comes from the
+// preset itself (ollama), then the provider's own env var. There is deliberately
+// no fallback to whatever key is in use: sending a MiniMax key to Groq leaks it
+// and fails with a 401. ok is false when no key is found, so the caller can
+// refuse the switch up front.
+func ForPreset(name string) (c Config, ok bool) {
+	c, ok = Presets[name]
+	if !ok {
+		return Config{}, false
+	}
+	if c.APIKey == "" {
+		c.APIKey = os.Getenv(KeyEnv[name])
+	}
+	return c, c.APIKey != ""
+}
+
 type Config struct {
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
