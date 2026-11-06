@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stream serves a fixed event-stream body and records the request that asked
@@ -308,5 +309,65 @@ func TestThinkSplitterHoldsPartialTagThenFlushes(t *testing.T) {
 	c, r := s.flush()
 	if c != "" || r != "</thi" {
 		t.Errorf("flush = (%q, %q), want ('', '</thi')", c, r)
+	}
+}
+
+// TestSlowStreamIsNotCutOff is the point of not setting http.Client.Timeout:
+// that deadline covers reading the body, so on a streamed response it caps the
+// length of the turn. A model still answering gets truncated mid-sentence, and
+// it reads as a bad answer rather than as a timeout.
+func TestSlowStreamIsNotCutOff(t *testing.T) {
+	const frames = 6
+	const gap = 40 * time.Millisecond
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		for i := 0; i < frames; i++ {
+			time.Sleep(gap)
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%d \"}}]}\n\n", i)
+			w.(http.Flusher).Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	// Short enough that an overall client timeout would fire well before the
+	// stream finishes, while each individual wait stays inside it.
+	old := responseHeaderTimeout
+	responseHeaderTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { responseHeaderTimeout = old })
+
+	c := New(srv.URL, "k", "m")
+	msg, _, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("a slow but healthy stream was killed: %v", err)
+	}
+	if msg.Content != "0 1 2 3 4 5 " {
+		t.Errorf("content = %q - the stream was truncated", msg.Content)
+	}
+}
+
+// TestDeadConnectionStillTimesOut is the other half: dropping the overall
+// timeout must not mean waiting forever on a server that never answers.
+func TestDeadConnectionStillTimesOut(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block // never writes a header
+	}))
+	defer func() { close(block); srv.Close() }()
+
+	old := responseHeaderTimeout
+	responseHeaderTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { responseHeaderTimeout = old })
+
+	c := New(srv.URL, "k", "m")
+	start := time.Now()
+	if _, _, err := c.Chat(context.Background(), nil, nil, nil); err == nil {
+		t.Fatal("a server that never responds should time out")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %s - the response-header timeout did not apply", elapsed)
 	}
 }

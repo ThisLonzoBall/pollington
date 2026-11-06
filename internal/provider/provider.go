@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -120,12 +121,39 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// responseHeaderTimeout bounds the wait for the *first* byte of the response,
+// which is where a dead connection shows up. Vars rather than consts so the
+// tests can exercise both paths in milliseconds.
+var (
+	responseHeaderTimeout = 90 * time.Second
+	dialTimeout           = 15 * time.Second
+)
+
 func New(baseURL, apiKey, model string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   model,
-		HTTP:    &http.Client{Timeout: 5 * time.Minute},
+		// Deliberately no http.Client.Timeout. It covers the whole exchange
+		// including reading the body, so on a streaming response it is a cap on
+		// the length of the turn, not a liveness check: a model that is
+		// answering perfectly well gets cut off mid-sentence once it passes the
+		// deadline. A thinking model working through a large file does that
+		// routinely, and the failure reads as a truncated answer rather than as
+		// a timeout.
+		//
+		// What actually needs bounding is a connection that never responds, so
+		// the limits sit on the dial and on the wait for the response headers.
+		// Past that point the stream is allowed to take as long as it takes;
+		// cancelling a turn is already the user's job, and esc does it.
+		HTTP: &http.Client{
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
+				ResponseHeaderTimeout: responseHeaderTimeout,
+				// Streaming responses must not be buffered up by the transport.
+				DisableCompression: true,
+			},
+		},
 	}
 }
 
