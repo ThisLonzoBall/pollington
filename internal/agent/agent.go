@@ -107,6 +107,14 @@ func New(c *provider.Client, tools []Tool) *Agent {
 	}
 }
 
+// SetClient swaps the provider for subsequent turns. History is kept, so the
+// conversation carries over. Call it only between turns: Send reads the client
+// on its own goroutine.
+func (a *Agent) SetClient(c *provider.Client) { a.client = c }
+
+// BaseURL reports the endpoint the agent is currently talking to.
+func (a *Agent) BaseURL() string { return a.client.BaseURL }
+
 // Send runs one user turn to completion and returns the final reply.
 //
 // TODO: this should emit progress events for the TUI instead of blocking.
