@@ -310,3 +310,40 @@ func TestThinkSplitterHoldsPartialTagThenFlushes(t *testing.T) {
 		t.Errorf("flush = (%q, %q), want ('', '</thi')", c, r)
 	}
 }
+
+func TestEndpointToleratesHowBaseURLsGetPasted(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"https://api.minimax.io/v1", "https://api.minimax.io/v1/chat/completions"},
+		// A trailing slash is what you get from copying out of a browser bar.
+		{"https://api.minimax.io/v1/", "https://api.minimax.io/v1/chat/completions"},
+		{"https://api.minimax.io/v1///", "https://api.minimax.io/v1/chat/completions"},
+		// And this is what you get from copying a provider's curl example.
+		{"https://api.minimax.io/v1/chat/completions", "https://api.minimax.io/v1/chat/completions"},
+		{"https://api.minimax.io/v1/chat/completions/", "https://api.minimax.io/v1/chat/completions"},
+		{"http://localhost:11434/v1", "http://localhost:11434/v1/chat/completions"},
+	} {
+		if got := (&Client{BaseURL: tc.base}).endpoint(); got != tc.want {
+			t.Errorf("base %q\n got %q\nwant %q", tc.base, got, tc.want)
+		}
+	}
+}
+
+// TestRequestHitsTheRightPath checks it end to end rather than only the string,
+// since the whole failure mode is a 404 that reads like a config problem.
+func TestRequestHitsTheRightPath(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL+"/v1/", "k", "m")
+	if _, _, err := c.Chat(context.Background(), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/v1/chat/completions" {
+		t.Errorf("requested %q", path)
+	}
+}
