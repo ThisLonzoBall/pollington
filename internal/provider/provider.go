@@ -155,7 +155,7 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool, emit fu
 		return Message{}, Usage{}, err
 	}
 
-	url := c.BaseURL + "/chat/completions"
+	url := c.endpoint()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return Message{}, Usage{}, err
@@ -275,6 +275,19 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool, emit fu
 		msg.ToolCalls = append(msg.ToolCalls, *calls[i])
 	}
 	return msg, usage, nil
+}
+
+// endpoint builds the chat-completions URL, forgiving the two ways a base URL
+// actually gets pasted in. A trailing slash gives "/v1//chat/completions", and
+// the whole endpoint gets copied out of a provider's curl example, which gives
+// "/v1/chat/completions/chat/completions". Both fail as a 404 from the
+// provider, which looks like a wrong model or a wrong key rather than a typo
+// three characters long.
+func (c *Client) endpoint() string {
+	const path = "/chat/completions"
+	base := strings.TrimRight(c.BaseURL, "/")
+	base = strings.TrimRight(strings.TrimSuffix(base, path), "/")
+	return base + path
 }
 
 const thinkOpen, thinkClose = "<think>", "</think>"
